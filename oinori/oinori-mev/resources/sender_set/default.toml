@@ -1,0 +1,4 @@
+[sender_address]
+# anonymized original account address
+hex_address = "anonymous"
+hex_private_key = "0xXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"

@@ -251,7 +251,9 @@ members = [
     "tools/compute-module-expansion-size",
     "types",
     "vm-validator",
+    "oinori/*",
 ]
+
 
 # NOTE: default-members is the complete list of binaries that form the "production Aptos codebase". These members should
 # never include crates that require fuzzing features or test features. These are the crates we want built with no extra
@@ -796,6 +798,7 @@ ureq = { version = "1.5.4", features = [
     "native-tls",
 ], default_features = false }
 url = { version = "2.4.0", features = ["serde"] }
+
 uuid = { version = "1.0.0", features = ["v4", "serde"] }
 variant_count = "1.1.0"
 walkdir = "2.3.3"

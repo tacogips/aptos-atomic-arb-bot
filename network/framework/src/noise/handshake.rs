@@ -263,6 +263,100 @@ impl NoiseUpgrader {
         Ok((noise_stream, peer_role))
     }
 
+    /// oinori: Performs the Noise IK handshake using a custom ephemeral identity.
+    ///
+    /// This is the Noise-layer counterpart of the connection pool identity rotation.
+    /// Unlike the original `upgrade_outbound` which uses the node's persistent identity,
+    /// this method accepts an externally provided x25519 keypair and PeerId so that
+    /// each outbound connection presents a unique identity to the remote validator.
+    pub async fn oinori_upgrade_outbound<TSocket, F>(
+        &self,
+        mut socket: TSocket,
+        self_peer_private_key: x25519::PrivateKey,
+        self_peer_id: PeerId,
+        remote_peer_id: PeerId,
+        remote_public_key: x25519::PublicKey,
+        time_provider: F,
+    ) -> Result<(NoiseStream<TSocket>, PeerRole), NoiseHandshakeError>
+    where
+        TSocket: AsyncRead + AsyncWrite + Debug + Unpin,
+        F: Fn() -> [u8; AntiReplayTimestamps::TIMESTAMP_SIZE],
+    {
+        // buffer to hold prologue + first noise handshake message
+        let mut client_message = [0; Self::CLIENT_MESSAGE_SIZE];
+
+        // Write the custom (ephemeral) PeerId into the prologue instead of the
+        // node's persistent identity, so the remote sees a fresh client identity.
+        client_message[..PeerId::LENGTH].copy_from_slice(self_peer_id.as_ref());
+
+        client_message[PeerId::LENGTH..Self::PROLOGUE_SIZE]
+            .copy_from_slice(remote_public_key.as_slice());
+
+        let (prologue_msg, client_noise_msg) = client_message.split_at_mut(Self::PROLOGUE_SIZE);
+
+        // craft 8-byte payload as current timestamp (in milliseconds)
+        let payload = time_provider();
+
+        // craft first handshake message  (-> e, es, s, ss)
+        let mut rng = rand::rngs::OsRng;
+
+        // Build a NoiseConfig from the ephemeral private key (not the node's long-lived key)
+        let self_noise_config = noise::NoiseConfig::new(self_peer_private_key);
+
+        let initiator_state = self_noise_config
+            .initiate_connection(
+                &mut rng,
+                prologue_msg,
+                remote_public_key,
+                Some(&payload),
+                client_noise_msg,
+            )
+            .map_err(NoiseHandshakeError::BuildClientHandshakeMessageFailed)?;
+
+        // send the first handshake message
+        trace!(
+            "{} noise client: handshake write: remote_public_key: {}",
+            self.network_context,
+            remote_public_key,
+        );
+        socket
+            .write_all(&client_message)
+            .await
+            .map_err(NoiseHandshakeError::ClientWriteFailed)?;
+        socket
+            .flush()
+            .await
+            .map_err(NoiseHandshakeError::ClientFlushFailed)?;
+
+        // receive the server's response (<- e, ee, se)
+        trace!(
+            "{} noise client: handshake read: remote_public_key: {}",
+            self.network_context,
+            remote_public_key,
+        );
+        let mut server_response = [0u8; Self::SERVER_MESSAGE_SIZE];
+        socket
+            .read_exact(&mut server_response)
+            .await
+            .map_err(NoiseHandshakeError::ClientReadFailed)?;
+
+        // parse the server's response
+        trace!(
+            "{} noise client: handshake finalize: remote_public_key: {}",
+            self.network_context,
+            remote_public_key,
+        );
+        let (_, session) = self_noise_config
+            .finalize_connection(initiator_state, &server_response)
+            .map_err(NoiseHandshakeError::ClientFinalizeFailed)?;
+
+        // finalize the connection
+        let noise_stream = NoiseStream::new(socket, session);
+        let peer_role = self.extract_peer_role_from_trusted_peers(remote_peer_id);
+
+        Ok((noise_stream, peer_role))
+    }
+
     /// Returns the peer role for the remote peer based on the trusted peer set.
     /// If the trusted peers is not found, or the trusted peers doesn't contain
     /// the remote peer, an error is logged and we return an unknown peer role.

@@ -48,6 +48,8 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 
+chrono = { workspace = true }
+
 [dev-dependencies]
 aptos-compression = { workspace = true }
 aptos-config = { workspace = true }

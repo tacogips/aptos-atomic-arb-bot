@@ -260,7 +260,6 @@ impl DataStreamEngine for StateStreamEngine {
                 global_data_summary.optimal_chunk_sizes.state_chunk_size,
                 self.clone().into(),
             )?;
-
             // Return the requests
             self.update_request_tracking(&client_requests)?;
             return Ok(client_requests);
@@ -1231,6 +1230,7 @@ impl DataStreamEngine for ContinuousTransactionStreamEngine {
                 optimal_chunk_sizes,
                 self.clone().into(),
             )?;
+
             self.update_request_tracking(&client_requests, &target_ledger_info)?;
             client_requests
         } else {

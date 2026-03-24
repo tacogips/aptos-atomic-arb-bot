@@ -411,6 +411,88 @@ pub async fn upgrade_outbound<T: TSocket>(
     })
 }
 
+/// oinori: Upgrades an outbound TCP connection using a custom ephemeral identity.
+///
+/// This is the transport-layer wrapper for the identity rotation mechanism.
+/// It performs the Noise handshake with the provided ephemeral keypair and then
+/// completes the AptosNet handshake (protocol version negotiation).
+pub async fn oinori_upgrade_outbound<T: TSocket>(
+    ctxt: Arc<UpgradeContext>,
+    fut_socket: impl Future<Output = io::Result<T>>,
+    self_peer_private_key: x25519::PrivateKey,
+    self_peer_id: PeerId,
+    addr: NetworkAddress,
+    remote_peer_id: PeerId,
+    remote_pubkey: x25519::PublicKey,
+) -> io::Result<Connection<NoiseStream<T>>> {
+    let origin = ConnectionOrigin::Outbound;
+    let socket = fut_socket.await?;
+
+    // Noise IK handshake with ephemeral identity
+    let (mut socket, peer_role) = ctxt
+        .noise
+        .oinori_upgrade_outbound(
+            socket,
+            self_peer_private_key,
+            self_peer_id,
+            remote_peer_id.clone(),
+            remote_pubkey,
+            AntiReplayTimestamps::now,
+        )
+        .await
+        .map_err(|err| {
+            if err.should_security_log() {
+                sample!(
+                    SampleRate::Duration(Duration::from_secs(15)),
+                    error!(
+                        SecurityEvent::NoiseHandshake,
+                        NetworkSchema::new(&ctxt.noise.network_context)
+                            .network_address(&addr)
+                            .connection_origin(&origin),
+                        error = %err,
+                    )
+                );
+            }
+            io::Error::new(io::ErrorKind::Other, err)
+        })?;
+
+    // sanity check: Noise IK should always guarantee this is true
+    debug_assert_eq!(remote_pubkey, socket.get_remote_static());
+
+    // exchange HandshakeMsg
+    let handshake_msg = HandshakeMsg {
+        supported_protocols: ctxt.supported_protocols.clone(),
+        chain_id: ctxt.chain_id,
+        network_id: ctxt.network_id,
+    };
+    let remote_handshake = exchange_handshake(&handshake_msg, &mut socket).await?;
+
+    // try to negotiate common aptosnet version and supported application protocols
+    let (messaging_protocol, application_protocols) = handshake_msg
+        .perform_handshake(&remote_handshake)
+        .map_err(|e| {
+            let e = format!(
+                "handshake negotiation with peer {} failed: {}",
+                remote_peer_id, e
+            );
+            io::Error::new(io::ErrorKind::Other, e)
+        })?;
+
+    // return successful connection
+    Ok(Connection {
+        socket,
+        metadata: ConnectionMetadata::new(
+            remote_peer_id,
+            CONNECTION_ID_GENERATOR.next(),
+            addr,
+            origin,
+            messaging_protocol,
+            application_protocols,
+            peer_role,
+        ),
+    })
+}
+
 /// The common AptosNet Transport.
 ///
 /// The base transport layer is pluggable, so long as it provides a reliable,
@@ -541,6 +623,8 @@ where
     /// `/dns6/<ipaddr>/tcp/<port>`
     pub fn dial(
         &self,
+        oinori_self_peer_private_key: x25519::PrivateKey,
+        oinori_self_peer_id: PeerId,
         peer_id: PeerId,
         addr: NetworkAddress,
     ) -> io::Result<
@@ -562,10 +646,25 @@ where
         }
 
         // try to connect socket
-        let fut_socket = self.base_transport.dial(peer_id, base_addr)?;
+        let fut_socket = self.base_transport.dial(
+            oinori_self_peer_private_key.clone(),
+            oinori_self_peer_id,
+            peer_id,
+            base_addr,
+        )?;
 
-        // outbound dial upgrade task
-        let upgrade_fut = upgrade_outbound(self.ctxt.clone(), fut_socket, addr, peer_id, pubkey);
+        // oinori: Use the ephemeral identity for the Noise handshake upgrade
+        // so the remote validator sees a fresh PeerId for this connection.
+        let upgrade_fut = oinori_upgrade_outbound(
+            self.ctxt.clone(),
+            fut_socket,
+            oinori_self_peer_private_key,
+            oinori_self_peer_id,
+            addr,
+            peer_id,
+            pubkey,
+        );
+
         let upgrade_fut = timeout_io(self.time_service.clone(), TRANSPORT_TIMEOUT, upgrade_fut);
         Ok(upgrade_fut)
     }
@@ -606,6 +705,7 @@ where
         // note: base transport should only accept its specific protocols
         // (e.g., `/memory/<port>` with no trailers), so we don't need to do any
         // parsing here.
+
         let (listener, listen_addr) = self.base_transport.listen_on(addr)?;
         let listen_addr =
             listen_addr.append_prod_protos(self.identity_pubkey, self.ctxt.handshake_version);
@@ -653,9 +753,20 @@ where
     type Outbound = Pin<Box<dyn Future<Output = io::Result<Self::Output>> + Send + 'static>>;
     type Output = Connection<NoiseStream<TTransport::Output>>;
 
-    fn dial(&self, peer_id: PeerId, addr: NetworkAddress) -> io::Result<Self::Outbound> {
-        self.dial(peer_id, addr)
-            .map(|upgrade_fut| upgrade_fut.boxed())
+    fn dial(
+        &self,
+        oinori_self_peer_private_key: x25519::PrivateKey,
+        oinori_self_peer_id: PeerId,
+        peer_id: PeerId,
+        addr: NetworkAddress,
+    ) -> io::Result<Self::Outbound> {
+        self.dial(
+            oinori_self_peer_private_key,
+            oinori_self_peer_id,
+            peer_id,
+            addr,
+        )
+        .map(|upgrade_fut| upgrade_fut.boxed())
     }
 
     fn listen_on(&self, addr: NetworkAddress) -> io::Result<(Self::Listener, NetworkAddress)> {

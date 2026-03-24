@@ -387,6 +387,16 @@ impl NetworkAddress {
         })
     }
 
+    /// oinori: find DNS name in the network address
+    pub fn find_dns(&self) -> Option<String> {
+        self.0.iter().find_map(|proto| match proto {
+            Protocol::Dns(dns_name) | Protocol::Dns4(dns_name) | Protocol::Dns6(dns_name) => {
+                Some(dns_name.0.clone())
+            },
+            _ => None,
+        })
+    }
+
     /// Retrieves the port from the network address
     pub fn find_port(&self) -> Option<u16> {
         self.0.iter().find_map(|proto| match proto {
@@ -949,24 +959,30 @@ mod test {
                     Handshake(123),
                 ],
             ),
-            ("/ip6/::1/tcp/0", vec![
-                Ip6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)),
-                Tcp(0),
-            ]),
-            ("/ip6/dead:beef::c0de/tcp/8080", vec![
-                Ip6(Ipv6Addr::new(0xDEAD, 0xBEEF, 0, 0, 0, 0, 0, 0xC0DE)),
-                Tcp(8080),
-            ]),
-            ("/dns/example.com/tcp/80", vec![
-                Dns(DnsName("example.com".to_owned())),
-                Tcp(80),
-            ]),
-            (&noise_addr_str, vec![
-                Dns(DnsName("example.com".to_owned())),
-                Tcp(1234),
-                NoiseIK(pubkey),
-                Handshake(5),
-            ]),
+            (
+                "/ip6/::1/tcp/0",
+                vec![Ip6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)), Tcp(0)],
+            ),
+            (
+                "/ip6/dead:beef::c0de/tcp/8080",
+                vec![
+                    Ip6(Ipv6Addr::new(0xDEAD, 0xBEEF, 0, 0, 0, 0, 0, 0xC0DE)),
+                    Tcp(8080),
+                ],
+            ),
+            (
+                "/dns/example.com/tcp/80",
+                vec![Dns(DnsName("example.com".to_owned())), Tcp(80)],
+            ),
+            (
+                &noise_addr_str,
+                vec![
+                    Dns(DnsName("example.com".to_owned())),
+                    Tcp(1234),
+                    NoiseIK(pubkey),
+                    Handshake(5),
+                ],
+            ),
         ];
 
         for (addr_str, expected_address) in &test_cases {

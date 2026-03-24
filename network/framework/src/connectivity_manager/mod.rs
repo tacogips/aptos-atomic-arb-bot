@@ -72,6 +72,25 @@ mod selection;
 #[cfg(test)]
 mod test;
 
+// oinori: Connection Pool Identity Rotation
+//
+// Aptos validators rate-limit or ban clients that send excessive erroneous requests
+// over their proprietary protocol. Since MEV bots inevitably generate many failed
+// simulation/transaction requests, a single persistent identity would quickly get blocked.
+//
+// To work around this, oinori maintains a connection pool where each connection uses a
+// randomly generated x25519 keypair (and thus a unique PeerId). Connections are periodically
+// rotated with fresh identities so the validator sees each reconnection as a new client.
+// This required changes across the entire network stack: Transport trait, Noise handshake,
+// PeerManager, and ConnectivityManager.
+use aptos_crypto::Uniform;
+use aptos_types::account_address::from_identity_public_key;
+use rand::prelude::*;
+use rand::{
+    rngs::{OsRng, StdRng},
+    Rng as rand_Rng, SeedableRng,
+};
+
 /// In addition to the backoff strategy, we also add some small random jitter to
 /// the delay before each dial. This jitter helps reduce the probability of
 /// simultaneous dials, especially in non-production environments where most nodes
@@ -130,6 +149,11 @@ pub struct ConnectivityManager<TBackoff> {
     mutual_authentication: bool,
     /// Whether or not to enable latency aware peer dialing
     enable_latency_aware_dialing: bool,
+
+    /// oinori: Tracks when each peer connection was established.
+    /// Used to determine which connections have exceeded the TTL (`expire_duration`)
+    /// and need to be rotated with a fresh random identity.
+    oinori_peer_connected_log: Arc<RwLock<HashMap<PeerId, SystemTime>>>,
 }
 
 /// Different sources for peer addresses, ordered by priority (Onchain=highest,
@@ -151,12 +175,16 @@ impl fmt::Debug for DiscoverySource {
 
 impl fmt::Display for DiscoverySource {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", match self {
-            DiscoverySource::OnChainValidatorSet => "OnChainValidatorSet",
-            DiscoverySource::File => "File",
-            DiscoverySource::Config => "Config",
-            DiscoverySource::Rest => "Rest",
-        })
+        write!(
+            f,
+            "{}",
+            match self {
+                DiscoverySource::OnChainValidatorSet => "OnChainValidatorSet",
+                DiscoverySource::File => "File",
+                DiscoverySource::Config => "Config",
+                DiscoverySource::Rest => "Rest",
+            }
+        )
     }
 }
 
@@ -336,6 +364,18 @@ struct DialState<TBackoff> {
     addr_idx: usize,
 }
 
+/// oinori: Generates a fresh random x25519 keypair and derives a PeerId from it.
+///
+/// Each outbound connection uses a unique ephemeral identity so that validators
+/// cannot correlate multiple connections back to the same MEV bot node.
+/// The private key is used for the Noise handshake, and the PeerId (derived from
+/// the public key) is presented as our identity during the connection prologue.
+fn oinori_new_self_peer_id() -> (x25519::PrivateKey, PeerId) {
+    let mut rng = StdRng::from_seed(OsRng.gen());
+    let key = x25519::PrivateKey::generate(&mut rng);
+    (key.clone(), from_identity_public_key(key.public_key()))
+}
+
 /////////////////////////
 // ConnectivityManager //
 /////////////////////////
@@ -395,6 +435,7 @@ where
             outbound_connection_limit,
             mutual_authentication,
             enable_latency_aware_dialing,
+            oinori_peer_connected_log: Arc::new(RwLock::new(HashMap::new())),
         };
 
         // Set the initial seed config addresses and public keys
@@ -415,6 +456,11 @@ where
         let ticker = self.time_service.interval(self.connectivity_check_interval);
         tokio::pin!(ticker);
 
+        // oinori: Check every 3 seconds for connections that exceeded the TTL
+        // and need to be rotated with a fresh identity.
+        let oinori_reconnect_ticker = self.time_service.interval(Duration::from_secs(3));
+        tokio::pin!(oinori_reconnect_ticker);
+
         info!(
             NetworkSchema::new(&self.network_context),
             "{} Starting ConnectivityManager actor", self.network_context
@@ -426,6 +472,13 @@ where
                 _ = ticker.select_next_some() => {
                     self.check_connectivity(&mut pending_dials).await;
                 },
+
+
+                // oinori: rotate expired connections with fresh identities
+                _ = oinori_reconnect_ticker.select_next_some() => {
+                    self.oinori_reconnect_peers().await;
+                },
+
                 req = self.requests_rx.select_next_some() => {
                     self.handle_request(req);
                 },
@@ -456,6 +509,88 @@ where
             NetworkSchema::new(&self.network_context),
             "{} ConnectivityManager actor terminated", self.network_context
         );
+    }
+
+    /// oinori: Rotates expired peer connections with fresh random identities.
+    ///
+    /// This is the core of the connection pool identity rotation mechanism.
+    /// Connections older than `expire_duration` (10s) are disconnected and
+    /// re-established with a newly generated x25519 keypair, making the validator
+    /// perceive each reconnection as a distinct client. At most `update_peer_num_at_once`
+    /// (10) connections are rotated per tick to avoid disrupting all connections at once.
+    async fn oinori_reconnect_peers(&mut self) {
+        let connection_reqs_tx = self.connection_reqs_tx.clone();
+        let oinori_peer_connected_log = self.oinori_peer_connected_log.clone();
+
+        // Connections older than this are eligible for identity rotation
+        let expire_duration = Duration::from_secs(10);
+        // Cap the number of connections rotated per tick to maintain connectivity stability
+        let update_peer_num_at_once = 10;
+
+        let reconnect_target_peers: Vec<PeerId> = {
+            let mut expired_peers: Vec<PeerId> = vec![];
+            for (peer_id, connected_at) in oinori_peer_connected_log.read().iter() {
+                if connected_at.elapsed().unwrap() > expire_duration {
+                    expired_peers.push(peer_id.clone());
+                }
+            }
+
+            // Randomly select a subset to avoid rotating the same peers each tick
+            expired_peers
+                .choose_multiple(&mut rand::thread_rng(), update_peer_num_at_once)
+                .cloned()
+                .collect::<Vec<PeerId>>()
+        };
+
+        // Disconnect and re-dial sequentially to avoid overwhelming the transport layer
+        for each_peer_id in reconnect_target_peers.into_iter() {
+            match connection_reqs_tx.disconnect_peer(each_peer_id).await {
+                Ok(_) => {
+                    let eligible_peers = self.discovered_peers.read().peer_set.clone();
+
+                    if let Some(discovered_peer) = eligible_peers.get(&each_peer_id) {
+                        let init_dial_state = DialState::new(self.backoff_strategy.clone());
+                        let dial_state = self
+                            .dial_states
+                            .entry(each_peer_id)
+                            .or_insert_with(|| init_dial_state);
+
+                        let peer_addr = dial_state.next_addr(&discovered_peer.addrs).clone();
+                        let peer_addr = match peer_addr {
+                            Some(peer_addr) => peer_addr,
+                            None => continue,
+                        };
+
+                        // Re-dial with a fresh random identity
+                        let (self_peer_private_key, self_peer_id) = oinori_new_self_peer_id();
+                        match connection_reqs_tx
+                            .dial_peer(
+                                self_peer_private_key,
+                                self_peer_id,
+                                each_peer_id,
+                                peer_addr.clone(),
+                            )
+                            .await
+                        {
+                            Ok(_) => {
+                                oinori_peer_connected_log
+                                    .write()
+                                    .insert(each_peer_id.clone(), SystemTime::now());
+                                self.discovered_peers
+                                    .write()
+                                    .update_last_dial_time(&each_peer_id)
+                            },
+                            Err(e) => {
+                                error!("oinori reconnect peer: re-dial error {}", e);
+                            },
+                        }
+                    }
+                },
+                Err(e) => {
+                    error!("oinori reconnect peer: disconnect error {}", e);
+                },
+            }
+        }
     }
 
     /// Returns the trusted peers for the current network context.
@@ -573,7 +708,8 @@ where
         let role = self.network_context.role();
         let roles_to_dial = network_id.upstream_roles(&role);
         let discovered_peers = self.discovered_peers.read().peer_set.clone();
-        let eligible_peers: Vec<_> = discovered_peers
+
+        let mut eligible_peers: Vec<_> = discovered_peers
             .into_iter()
             .filter(|(peer_id, peer)| {
                 peer.is_eligible_to_be_dialed() // The node is eligible to dial
@@ -583,6 +719,10 @@ where
             })
             .collect();
 
+        // oinori: Filter to only geographically close validators (Korea/Japan/Singapore or EU)
+        // to minimize network latency for time-sensitive MEV transactions.
+        oinori_filter_sort_eligible_peers(&mut eligible_peers);
+
         // Initialize the dial state for any new peers
         for (peer_id, _) in &eligible_peers {
             self.dial_states
@@ -590,57 +730,10 @@ where
                 .or_insert_with(|| DialState::new(self.backoff_strategy.clone()));
         }
 
-        // Limit the number of dialed connections from a fullnode. Note: this does not
-        // limit the number of incoming connections. It only enforces that a fullnode
-        // cannot have more outgoing connections than the limit (including in-flight dials).
-        let num_eligible_peers = eligible_peers.len();
-        let num_peers_to_dial =
-            if let Some(outbound_connection_limit) = self.outbound_connection_limit {
-                // Get the number of outbound connections
-                let num_outbound_connections = self
-                    .connected
-                    .iter()
-                    .filter(|(_, metadata)| metadata.origin == ConnectionOrigin::Outbound)
-                    .count();
-
-                // Add any pending dials to the count
-                let total_outbound_connections =
-                    num_outbound_connections.saturating_add(self.dial_queue.len());
-
-                // Calculate the potential number of peers to dial
-                let num_peers_to_dial =
-                    outbound_connection_limit.saturating_sub(total_outbound_connections);
-
-                // Limit the number of peers to dial by the total number of eligible peers
-                min(num_peers_to_dial, num_eligible_peers)
-            } else {
-                num_eligible_peers // Otherwise, we attempt to dial all eligible peers
-            };
-
-        // If we have no peers to dial, return early
-        if num_peers_to_dial == 0 {
-            return vec![];
-        }
-
-        // Prioritize the eligible peers and select the peers to dial
-        if selection::should_select_peers_by_latency(
-            &self.network_context,
-            self.enable_latency_aware_dialing,
-        ) {
-            // Ping the eligible peers (so that we can fetch missing ping latency information)
-            self.ping_eligible_peers(eligible_peers.clone()).await;
-
-            // Choose the peers to dial (weighted by ping latency)
-            selection::choose_random_peers_by_ping_latency(
-                self.network_context,
-                eligible_peers,
-                num_peers_to_dial,
-                self.discovered_peers.clone(),
-            )
-        } else {
-            // Choose the peers randomly
-            selection::choose_peers_to_dial_randomly(eligible_peers, num_peers_to_dial)
-        }
+        // oinori: Connect to ALL eligible (geographically filtered) peers rather than
+        // using the original connection limit logic. Maintaining connections to many
+        // validators increases the chance of fast transaction submission for MEV.
+        eligible_peers
     }
 
     /// Pings the eligible peers to calculate their ping latencies
@@ -762,6 +855,7 @@ where
         let (cancel_tx, cancel_rx) = oneshot::channel();
 
         let network_context = self.network_context;
+        let oinori_peer_connected_log = self.oinori_peer_connected_log.clone();
         // Create future which completes by either dialing after calculated
         // delay or on cancellation.
         let connection_reqs_tx = self.connection_reqs_tx.clone();
@@ -779,8 +873,21 @@ where
                         peer_id.short_str(),
                         addr
                     );
-                    match connection_reqs_tx.dial_peer(peer_id, addr.clone()).await {
-                        Ok(_) => DialResult::Success,
+
+
+                    // oinori: Generate a fresh random identity for this connection.
+                    // The validator will see a unique PeerId for each dial attempt,
+                    // preventing identity-based rate limiting or banning.
+                    let (self_peer_private_key, self_peer_id) = oinori_new_self_peer_id();
+                    match connection_reqs_tx.dial_peer(
+                        self_peer_private_key, self_peer_id,
+                        peer_id.clone(), addr.clone()).await {
+                        Ok(_) => {
+                            // Record connection time for the TTL-based rotation logic
+                            let mut oinori_peer_connected_log_writer = oinori_peer_connected_log.write();
+                            oinori_peer_connected_log_writer.insert(peer_id, SystemTime::now());
+                            DialResult::Success
+                        },
                         Err(e) => DialResult::Failed(e),
                     }
                 },
@@ -868,6 +975,7 @@ where
                     self.network_context,
                     src,
                 );
+
                 self.handle_update_discovered_peers(src, discovered_peers);
             },
             ConnectivityRequest::GetDialQueueSize(sender) => {
@@ -1377,4 +1485,223 @@ where
 
         min(max_delay, self.backoff.next().unwrap_or(max_delay)) + jitter
     }
+}
+
+/// oinori: Filters peers to only include validators in geographically close regions.
+///
+/// For MEV, network latency directly impacts profitability. By connecting only to
+/// validators co-located in nearby data centers (Korea/Japan/Singapore or Europe),
+/// we minimize round-trip time for transaction submission.
+///
+/// The region is selected via the `KOREAN_VALIDATOR` environment variable:
+/// - "1": connect to Korea/Japan/Singapore region validators
+/// - otherwise: connect to European region validators
+fn oinori_filter_sort_eligible_peers(eligible: &mut Vec<(PeerId, DiscoveredPeer)>) {
+    if eligible.len() == 1 {
+        // Only the seed peer is present; don't filter it out
+        return;
+    }
+
+    let validators_filter = if std::env::var("KOREAN_VALIDATOR")
+        .unwrap_or_else(|_| "0".to_string())
+        .as_str()
+        == "1"
+    {
+        korean_validators()
+    } else {
+        europe_validators()
+    };
+
+    let mut i = 0;
+    while i < eligible.len() {
+        if let Some((peer_id, _)) = eligible.get(i) {
+            if !validators_filter.contains(&peer_id.to_hex_literal()) {
+                let _ = eligible.remove(i);
+            } else {
+                i += 1;
+            }
+        } else {
+            break;
+        }
+    }
+}
+
+/// oinori: Validator PeerIDs located in the Korea/Japan/Singapore region.
+fn korean_validators() -> HashSet<String> {
+    // Seoul / Tokyo / Yongsan-gu
+    [
+        "0x4c893cf8d614f503e982df5b48e9443bab4ea6be4f922a5d3858305c0a3af3ee",
+        "0x99d623e94981c2a6d41306785d69d66c237c6d3ac305cb6f32307785fde7fda2",
+        "0x371dfdee9fbecaa358683936c5946aa28393067fa60e1e185c4250da461e15cf",
+        "0xadbfddd3d10cad1eed59d2c0793df0bfd1d16255309c38b34b8351daaddecccc",
+        "0x947c6451ad9a8659cba4e60a6da41086eb66e73fc07936bd3b7044873b5e094d",
+        "0x4cc22e5d2e84794c3c672b0b34145898ee971a4ff042eabae23627547f6dac80",
+        "0xa286a9187c86b4a3cef60478e5c61bb45757b795a8e6577ebbf0fa990db574cc",
+        "0xfc307ecd61ac025f5ec1828d2114d11b474b4d8a1b0c228c38614dc96b940048",
+        "0xc29a231581f243ddcbf97de8b93c8aabb466dd6912ce5ba12579ff2f13cb8da5",
+        "0x46b51b26710797faed701722bfc809386110c9720328f2b431e193cb5dc161f7",
+        "0x32ad233a939bfbafb8d9056c0ae2eba58828d8baf5582277578ced38477f0f14",
+        "0xae139fd4e266beb28925227dcd220d89348117680e48d4aa20685ae102ae2a13",
+        "0xa6eb54c274da96778a6702740a763f6aa7b02eef3d1efc2623d28289d185118",
+        "0x6c8a3474cb49202515d121fea0f3217d303e41f6bdc43e615f1cd90855118089",
+        // Singapore
+        "0xe8fac9c24a3bfc71ed79d466fa3c2c2b4787f1f9686e1d1e9e97fde473898788",
+        "0x649127a4d1b26b4cf936f7b795917dbcb571c59c2926ae473fe4d9df3575790e",
+    ]
+    .into_iter()
+    .map(|x| x.to_string())
+    .collect::<HashSet<String>>()
+}
+
+/// oinori: Validator PeerIDs located in the European region.
+fn europe_validators() -> HashSet<String> {
+    //┌──────┬────────────────────────────────────────────────────────────────────┬───────────────────────────────────────────────────────────────────────────────┬─────────────┐
+    //│ rank ┆ account_address                                                    ┆ ip_adrress_or_host                                                            ┆ country     │
+    //│ ---  ┆ ---                                                                ┆ ---                                                                           ┆ ---         │
+    //│ i64  ┆ str                                                                ┆ str                                                                           ┆ str         │
+    //╞══════╪════════════════════════════════════════════════════════════════════╪═══════════════════════════════════════════════════════════════════════════════╪═════════════╡
+    //│ 2    ┆ 0xef191e643c2ed2d103de4109a506e020f5dde818cbc1ffe5e4ee36328cd22e9b ┆ val1.mainnet.aptos.p2p.org                                                    ┆ Netherlands │
+    //│ 3    ┆ 0xb4a4f1ef8b0702d85547dc444571a473f736e1205a86db36dad13815ad9bbbf6 ┆ 162.19.83.220                                                                 ┆ France      │
+    //│ 7    ┆ 0x86da6288dd50be1653aa2a8269acf881d3b4b414938ca7ab3b662c2dfeb794df ┆ aptos-validator.polkachu.com                                                  ┆ Germany     │
+    //│ 9    ┆ 0xb5064f2e6d2d4887c836c8cbd90d23a75cd7afd4530e4a82f06bf528abcb30d6 ┆ 212.95.51.89                                                                  ┆ Germany     │
+    //│ 19   ┆ 0x81d41a31fb5d3f827d188511e6fca1ddbed6cfa0ffbd46fa6d84a7adfe59f356 ┆ 80.190.129.50                                                                 ┆ Germany     │
+    //│ 22   ┆ 0xc32f662cd9718f02d8a8e5628f8f642fa27cd9b5f457b406ed734901a4939e34 ┆ aptos-validator.stakely.io                                                    ┆ Poland      │
+    //│ 25   ┆ 0xc807d24a6ac70599cc9b72c649eb6b00c34a0e9c704447c44d75fade07213a26 ┆ v.aptos.mainnet.republiccrypto-source.info                                    ┆ Netherlands │
+    //│ 30   ┆ 0x9a41af5c002f91dc29cb2843ab823e3d6cdaa6cc86e6331646a4f1328609a744 ┆ validator.mainnet.aptos.kiln.fi                                               ┆ France      │
+    //│ 31   ┆ 0x3d654d35d558d6381fe6a0484d81c4fed128cd8adc1ca7a1482c297da80ee039 ┆ vn.mainnet.pontem.network                                                     ┆ Germany     │
+    //│ 34   ┆ 0x1c6a051d9a5ec4cf4200bab21a794d3afe8259d625f6b78aa4d01ab4652327d5 ┆ aptos-main.everstake.one                                                      ┆ Germany     │
+    //│ 35   ┆ 0x9bfd93ebaa1efd65515642942a607eeca53a0188c04c21ced646d2f0b9f551e8 ┆ geuw4c-ccn-aptos-mainnet-val1.jumpisolated.com                                ┆ Netherlands │
+    //│ 61   ┆ 0x6099edbe54f242bad50020dfd67646b1e46282999483e7064e70f02f7ea3c15  ┆ 141.95.126.4                                                                  ┆ Germany     │
+    //│ 79   ┆ 0xe1abb4ea11673aad3137052dce831eb20a1907815cb4a03ccac38ba7a9e988d3 ┆ aptos-validator.nelrann.org                                                   ┆ Poland      │
+    //│ 81   ┆ 0xbcb83e07eed46120a0143bd9861ea82495293228b9cd64cc43bda722edaeb7ad ┆ aptos.mindheartsoul.org                                                       ┆ Germany     │
+    //│ 82   ┆ 0x302b69423fde5c7dd333ee50d48df16f076072e61f95e0f6db5685ee6c70d35b ┆ 141.95.99.105                                                                 ┆ Germany     │
+    //│ 83   ┆ 0x85bec1dcb618004064ab52a594321e8f047bac53be8244c5d10ac136128e30f7 ┆ aptos-validator0.taras.uno                                                    ┆ France      │
+    //│ 84   ┆ 0xd2dc57e95669c9bf102cb5693fe8b2a8b10d330213d7ddd9fb417f86f183dc1d ┆ 144.76.114.5                                                                  ┆ Germany     │
+    //│ 85   ┆ 0xe9f7d36334768683b85ec1df892dfd8fc389c8f6dbe0b890195d579a6e390c78 ┆ 85.10.199.23                                                                  ┆ Germany     │
+    //│ 86   ┆ 0x71debfa733376c4f2dc8970de8962931fe107c7dc1daad3bf189101bfd4adc4b ┆ aptos.mainnet.validator.justlstn.dev                                          ┆ Poland      │
+    //│ 87   ┆ 0x904bc056aa17a45c2715113e06cb42f5762581a7b839206f5348938db69425be ┆ aptos-mainnet-validator.stakemind.io                                          ┆ Germany     │
+    //│ 88   ┆ 0xf2b6feeea4546648c257c7e33ff4f0aa8db3bb2949cca065c9db015478363458 ┆ validator.aptos.quantnode.tech                                                ┆ Germany     │
+    //
+    //│ !8    ┆ 0x48179547b95487f77214c12e2561d53531122a91e5f79ee9be968ce8185bc444 ┆ aptos.lavenderfive.com                                                        ┆ Finland     │
+    //│ !14   ┆ 0xffb19e4519bc434d3a064652064d14dd34fabc8f785f6be8670d7465d8419c45 ┆ validator.envoys-aptos.com                                                    ┆ Ireland     │
+    //│ !23   ┆ 0x9da88926fd4d773fd499fc41830a82fe9c9ff3508435e7a16b2d8f529e77cdda ┆ add6dfc3ccd12420ab961eccaebeb7ba-460d5d919261f748.elb.eu-west-1.amazonaws.com ┆ Ireland     │
+    //│ !26   ┆ 0x209154f6e735562ff13b963b91588039a162fa95f409c068f917f27b762dfff8 ┆ validator-1.mainnet.aptos.fernlabs.xyz                                        ┆ Sweden      │
+    //│ !27   ┆ 0xf05d2fe6618a3cb4258e94f2da24c1ee71ae4e7942b4f8b5836ad5267e59568f ┆ bd-aptos-main-validator-01.bdnodes.net                                        ┆ Ireland     │
+    //│ !37   ┆ 0x39af34a3586c7ac7c4947885f3693bd748969d70b54db38655419060c4fe833f ┆ validator.ae9475fe-7618-4d5f-ac43-d8c1a2feaba4.aptos.bison.run                ┆ Ireland     │
+    //│ !39   ┆ 0xb87476d8877cfc324a520cef4d0cd6e42e26ec3ce613a8127220e2e444561e16 ┆ aeuw1b-ccn-aptos-mainnet-val2.jumpisolated.com                                ┆ Ireland     │
+    //│ !42   ┆ 0xf25c7b01c68f7ca3583dde23cbaefd14f930f6655237be627435b9727b7c9034 ┆ validator.baa57d9f-8c15-4166-b325-e86b85e5ddc2.aptos.bison.run                ┆ Ireland     │
+    //│ !43   ┆ 0x60b7bb4774ca6bebe6fd9204252f3abcd528afa497854d8fd0e19c1c6d7616f7 ┆ validator.14ab83ed-f362-4d0a-abde-bcf2975eaf7f.aptos.bison.run                ┆ Ireland     │
+    //│ !44   ┆ 0x99d3561f2c46a3755e681a5b2199886720257404856cd3eb2b1c2566e585ea11 ┆ validator.17de0f1e-adf0-457e-af3a-a2889f479988.aptos.bison.run                ┆ Ireland     │
+    //│ !45   ┆ 0x29a37d38db6717a61ba0cad4ffe01d15a320888601f15b3cf920feb0f9813abf ┆ validator.099a5cfb-3911-474d-8e3c-eac77aba4a01.aptos.bison.run                ┆ Ireland     │
+    //
+    //
+    //│ !38   ┆ 0x22dd12212d76bc5844b4a0605bf59fa56547f42a40fb42267e29adca5efecfc8 ┆ validator-3.mainnet.aptos.fernlabs.xyz                                        ┆ Sweden      │
+    //│ !48   ┆ 0xb225277ba076b6620447f7b10abb30911966eb66d25fb526b7f09c2227425a11 ┆ aptos-staked-7.prod-eks-ap-northeast-2.staked.cloud                           ┆ Sweden      │
+    //│ !60   ┆ 0xe8a71d40da724ac1ff522d9686dbf1da21bab2d803441df73c86c4bae76d399  ┆ aptos-staked-4.prod-eks-ap-northeast-2.staked.cloud                           ┆ Sweden      │
+    //│ !52   ┆ 0x5d31f0d7a171e5ee6a6e2f11917f5a157d745e993f299a8b75acb961bd9da4e0 ┆ validator.ad6f7ef7-feb4-4988-9310-a618dbed79cc.aptos.bison.run                ┆ Ireland     │
+    //│ !57   ┆ 0x29c4513282335179295fa7c6a225ca9e2e17b3e14e30a463969d29b87ccb8db6 ┆ validator.f3585fdb-f7f7-4cbc-aa05-d17e15618455.aptos.bison.run                ┆ Ireland     │
+    //│ !71   ┆ 0xc48683f9f684d2845c18e8d33d5f6c8581acfc1eb1c78b1de25562d136877e10 ┆ s2zs55mnbe30e46g.node2.cloud-b.mainnet.aptoslabs.com                          ┆ Sweden      │
+    //│ !67   ┆ 0x1187093055547879056b22e3d3e80f491bc1b4387c3642d934da0fedaa5e5f28 ┆ validator.ac8829ee-ce3b-4342-b057-8c4cb7ee1b5b.aptos.bison.run                ┆ Ireland     │
+    //│ !90   ┆ 0x4cfeaf68aacfd0cd459c292837854ce058b9ba6c1cc35e8684b1a5030b1dc922 ┆ 65.109.70.119                                                                 ┆ Finland     │
+    //│ !93   ┆ 0xb840f1cfae5aaa4b50a11a6a23e2e859717e2f355fcd614592b219fc4d4e44a3 ┆ validator.dott3.click                                                         ┆ Ireland     │
+    //│ !96   ┆ 0x447fc1fc130cf9245d9ca291785d0f8a00c3ebdc26b2e4c6165801b0af01c917 ┆ 65.109.70.110                                                                 ┆ Finland     │
+    //│ !100  ┆ 0x18a3ef480b7883d05b917873a8b6d5f5a5f763372b650242ede89836a67cdce8 ┆ validator.aptoslabs.ltd                                                       ┆ Germany     │
+    //│ !101  ┆ 0x8d5c9e82d612c390b5dea347918b6421146bb638724854300eed065cc4211a6e ┆ v.aptoslabs.cc                                                                ┆ Finland     │
+    //│ !105  ┆ 0x483cf8942c76d86ed28a9849940abdea14952a551be84c38c844208e13d976d4 ┆ 65.109.64.57                                                                  ┆ Finland     │
+    //│ !107  ┆ 0x8dd8b23892be142c2ec4b7e1427584c97403e570cde4e6d9a81d2b220c884af5 ┆ 3.66.156.72                                                                   ┆ Germany     │
+    //└──────┴────────────────────────────────────────────────────────────────────┴───────────────────────────────────────────────────────────────────────────────┴─────────────┘
+
+    [
+        //"0xef191e643c2ed2d103de4109a506e020f5dde818cbc1ffe5e4ee36328cd22e9b",
+        //"0xb4a4f1ef8b0702d85547dc444571a473f736e1205a86db36dad13815ad9bbbf6",
+        //"0x86da6288dd50be1653aa2a8269acf881d3b4b414938ca7ab3b662c2dfeb794df",
+        //"0xb5064f2e6d2d4887c836c8cbd90d23a75cd7afd4530e4a82f06bf528abcb30d6",
+        //"0x81d41a31fb5d3f827d188511e6fca1ddbed6cfa0ffbd46fa6d84a7adfe59f356",
+        //"0xc32f662cd9718f02d8a8e5628f8f642fa27cd9b5f457b406ed734901a4939e34",
+        //"0xc807d24a6ac70599cc9b72c649eb6b00c34a0e9c704447c44d75fade07213a26",
+        //"0x9a41af5c002f91dc29cb2843ab823e3d6cdaa6cc86e6331646a4f1328609a744",
+        //"0x3d654d35d558d6381fe6a0484d81c4fed128cd8adc1ca7a1482c297da80ee039",
+        //"0x1c6a051d9a5ec4cf4200bab21a794d3afe8259d625f6b78aa4d01ab4652327d5",
+        //"0x6099edbe54f242bad50020dfd67646b1e46282999483e7064e70f02f7ea3c15",
+        //"0xe1abb4ea11673aad3137052dce831eb20a1907815cb4a03ccac38ba7a9e988d3",
+        //"0xbcb83e07eed46120a0143bd9861ea82495293228b9cd64cc43bda722edaeb7ad",
+        //"0x302b69423fde5c7dd333ee50d48df16f076072e61f95e0f6db5685ee6c70d35b",
+        //"0x85bec1dcb618004064ab52a594321e8f047bac53be8244c5d10ac136128e30f7",
+        //"0xd2dc57e95669c9bf102cb5693fe8b2a8b10d330213d7ddd9fb417f86f183dc1d",
+        //"0xe9f7d36334768683b85ec1df892dfd8fc389c8f6dbe0b890195d579a6e390c78",
+        //"0x71debfa733376c4f2dc8970de8962931fe107c7dc1daad3bf189101bfd4adc4b",
+        //"0x904bc056aa17a45c2715113e06cb42f5762581a7b839206f5348938db69425be",
+        //"0xf2b6feeea4546648c257c7e33ff4f0aa8db3bb2949cca065c9db015478363458",
+        // noise error???
+        //"0x9bfd93ebaa1efd65515642942a607eeca53a0188c04c21ced646d2f0b9f551e8",
+        "0x324df1e27c4129a58d73851ae0e9366064dc666a73e747051e203694a4cb257",
+        "0x33f0c333f6fcb9d1ef54d54093f0482b31bb0bdcd34bfa446e7416ff930453c0",
+        "0xef191e643c2ed2d103de4109a506e020f5dde818cbc1ffe5e4ee36328cd22e9b",
+        "0x39b844cb561d2a04c800164465e2eb2c2ea520499d718c35492244346da07b5f",
+        "0x3d654d35d558d6381fe6a0484d81c4fed128cd8adc1ca7a1482c297da80ee039",
+        "0xda418307cff595ced2af5eb471ec11b1ad6a4907ef57d6e2eeb253bdd5bd9d0d",
+        "0xb87476d8877cfc324a520cef4d0cd6e42e26ec3ce613a8127220e2e444561e16",
+        "0xc44406bd36286223e7f2924ef48aa017b133dca73f2837b3692784cb046dda48",
+        "0x6099edbe54f242bad50020dfd67646b1e46282999483e7064e70f02f7ea3c15",
+        "0x29f3f84adbd1eba85bbbec33814924fddcdc9f51921d9cade0dd3b3fdf9170cd",
+        "0x4fbd48a3ddf937873e0f50fb3a69172959f83feb46c4868bd3f7c45f1bdc2be0",
+        "0x550fe3956e44112599b8410404e0977e74cc5bcb59a11b0706da734cd0f9beb2",
+        "0x81d41a31fb5d3f827d188511e6fca1ddbed6cfa0ffbd46fa6d84a7adfe59f356",
+        "0x8bf2201bf4cec31f736aacc0f44f29c014ecd8562975aecce19271ca179e8db5",
+        "0x2537e9d461d311dc6f1dee690f093b4e353f472abc2493c64275a3d5572532cc",
+        "0xee36c1068076b199cf537bf652b1e586216a7dfb7c3447ff40333c971717eee6",
+        "0xf2b6feeea4546648c257c7e33ff4f0aa8db3bb2949cca065c9db015478363458",
+        "0xc067ce10f1faa4812fe608e2d4b3e1fe0bb629e91cfff532cccc23803a624414",
+        "0xe9f7d36334768683b85ec1df892dfd8fc389c8f6dbe0b890195d579a6e390c78",
+        "0xe1abb4ea11673aad3137052dce831eb20a1907815cb4a03ccac38ba7a9e988d3",
+        "0x18a3ef480b7883d05b917873a8b6d5f5a5f763372b650242ede89836a67cdce8",
+        "0xf08bb83cf89d299e4cddee7ef987b850a35a399900ba22860cc1553da3682a84",
+        "0x6c89d2927f78bb3b1743b4cf97d69777c2669cfbb11aff5bdaaa1083db3c3123",
+        "0x8dd8b23892be142c2ec4b7e1427584c97403e570cde4e6d9a81d2b220c884af5",
+        "0xc807d24a6ac70599cc9b72c649eb6b00c34a0e9c704447c44d75fade07213a26",
+        "0xf05d2fe6618a3cb4258e94f2da24c1ee71ae4e7942b4f8b5836ad5267e59568f",
+        "0xfc307ecd61ac025f5ec1828d2114d11b474b4d8a1b0c228c38614dc96b940048",
+        "0xc29a231581f243ddcbf97de8b93c8aabb466dd6912ce5ba12579ff2f13cb8da5",
+        "0xb225277ba076b6620447f7b10abb30911966eb66d25fb526b7f09c2227425a11",
+        "0x6be5d9afa759b48140a69c737e9b066270146c7065455d04c2c76842c3e23d4",
+        "0x8d5c9e82d612c390b5dea347918b6421146bb638724854300eed065cc4211a6e",
+        "0x4cfeaf68aacfd0cd459c292837854ce058b9ba6c1cc35e8684b1a5030b1dc922",
+        "0x447fc1fc130cf9245d9ca291785d0f8a00c3ebdc26b2e4c6165801b0af01c917",
+        "0x483cf8942c76d86ed28a9849940abdea14952a551be84c38c844208e13d976d4",
+        "0xb43fe1ef756cae4fefea16dad049fb0760b7d8593ace12527e302520d934d0d7",
+        "0x9da88926fd4d773fd499fc41830a82fe9c9ff3508435e7a16b2d8f529e77cdda",
+        "0x22dd12212d76bc5844b4a0605bf59fa56547f42a40fb42267e29adca5efecfc8",
+        "0xd89481a2f4ff5598f8a6e83e67f21dba6a0df56a1bc35b9c67a2de6dce166b30",
+        "0x209154f6e735562ff13b963b91588039a162fa95f409c068f917f27b762dfff8",
+        "0xdc37463c5782469908d7ff43873390075980a8fa5b1c0770457c48f8891a5bff",
+        "0xddf23883328d39d8cbb4fad97f0e4bd45827ea999b66aa2a1cffa76615b9ef01",
+        "0xb840f1cfae5aaa4b50a11a6a23e2e859717e2f355fcd614592b219fc4d4e44a3",
+        "0x4b2c524fc36698caf9d049b6088faa002cea3bbcbf5ed764f59768b4fe96efcf",
+        "0xdb5247f859ce63dbe8940cf8773be722a60dcc594a8be9aca4b76abceb251b8e",
+        "0xc92d451e6b5c1bca83d002c3dad857cb8fafb1e49ef5ddadf25c0f40f9d5728c",
+        "0xefaec1debc26828f8142a71a906ba180cae526b0688f304a28e57fb66f2b9a5c",
+        "0xb4a4f1ef8b0702d85547dc444571a473f736e1205a86db36dad13815ad9bbbf6",
+        "0x9a41af5c002f91dc29cb2843ab823e3d6cdaa6cc86e6331646a4f1328609a744",
+        "0x7425cde20dc18a8e5e169614c47c0e4435fd1b6c475efdefbdbbb73785d331e3",
+        "0x1c6a051d9a5ec4cf4200bab21a794d3afe8259d625f6b78aa4d01ab4652327d5",
+        "0xff3e9c10dd3781a1e0750a75ae9e5b04133cd7e8ca18b9936ffcf3b2a2538a49",
+        "0x346361873c235e1a300fd67a2e8b7bd1ea3744001b2e0d1942317c4c8521f5dd",
+        "0x401a881d9770f054a1b8cd6829f3d65a040bbe9b387ebcce50bddf0f853077d9",
+        "0x63b0a7343c481fe176603e4e30cc5acc521c75d4310ce1b7b657c8168df66c66",
+        "0x6a1d3313a58719cf5abc1aaee6b4b74bc7e2c69036a8a02f02eb4f3ab4a3d678",
+        "0x85bec1dcb618004064ab52a594321e8f047bac53be8244c5d10ac136128e30f7",
+        "0x9dfeca70acb3e01328d9dbbda4a6c23913fcd81ef25f74fab52cb2e96b0a1486",
+        "0xc48683f9f684d2845c18e8d33d5f6c8581acfc1eb1c78b1de25562d136877e10",
+        "0xc32f662cd9718f02d8a8e5628f8f642fa27cd9b5f457b406ed734901a4939e34",
+        "0xff90c2afcd5c09b7414e4629d17899bcd763f8673c400a6d983fe15b98cb65d2",
+        "0x22c25ea17f339761d512b588feb436a4784332f4bedfb3f17e25db7d8de0c94c",
+        "0x371dfdee9fbecaa358683936c5946aa28393067fa60e1e185c4250da461e15cf",
+        "0x71debfa733376c4f2dc8970de8962931fe107c7dc1daad3bf189101bfd4adc4b",
+        "0x4c7c21084620f9e55f50f292d1803e5fbcf55c6d850b24b5e64efef08d2aa428",
+        "0x9bfd93ebaa1efd65515642942a607eeca53a0188c04c21ced646d2f0b9f551e8",
+        "0x30952a7b88b02028e7c6c7209722cc047acaef85d3d303f375d8ea89fc6ba0c6",
+    ]
+    .into_iter()
+    .map(|x| x.to_string())
+    .collect::<HashSet<String>>()
 }

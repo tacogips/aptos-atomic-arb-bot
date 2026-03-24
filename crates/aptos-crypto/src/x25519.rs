@@ -64,8 +64,11 @@ pub const PUBLIC_KEY_SIZE: usize = 32;
 pub const SHARED_SECRET_SIZE: usize = 32;
 
 /// This type should be used to deserialize a received private key
-#[derive(DeserializeKey, SilentDisplay, SilentDebug, SerializeKey)]
-#[cfg_attr(any(test, feature = "fuzzing"), derive(Clone))]
+// oinori: Clone is always derived (was test/fuzzing-only in upstream aptos-core).
+// The connection pool identity rotation generates ephemeral keys that must be
+// passed through multiple function calls (ConnectivityManager → PeerManager →
+// Transport → Noise handshake), requiring Clone.
+#[derive(DeserializeKey, SilentDisplay, SilentDebug, SerializeKey, Clone)]
 pub struct PrivateKey(x25519_dalek::StaticSecret);
 
 /// This type should be used to deserialize a received public key

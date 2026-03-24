@@ -53,6 +53,7 @@ pub fn bootstrap_api_and_indexer(
     Option<Runtime>,
     Option<Runtime>,
     Option<Runtime>,
+    Sender<MempoolClientRequest>,
 )> {
     // Create the mempool client and sender
     let (mempool_client_sender, mempool_client_receiver) =
@@ -94,30 +95,16 @@ pub fn bootstrap_api_and_indexer(
         None
     };
 
-    // Creates the indexer grpc runtime
-    let indexer_grpc = bootstrap_indexer_grpc(
-        node_config,
-        chain_id,
-        db_rw.reader.clone(),
-        mempool_client_sender.clone(),
-        indexer_reader,
-    );
-
-    // Create the indexer runtime
-    let indexer_runtime = indexer::bootstrap_indexer(
-        node_config,
-        chain_id,
-        db_rw.reader.clone(),
-        mempool_client_sender,
-    )?;
+    // oinori: skip indexer bootstrap for performance
 
     Ok((
         mempool_client_receiver,
         api_runtime,
-        indexer_table_info_runtime,
-        indexer_runtime,
-        indexer_grpc,
+        None, // indexer_table_info_runtime
+        None, // indexer_runtime
+        None, // indexer_grpc
         db_indexer_runtime,
+        mempool_client_sender,
     ))
 }
 

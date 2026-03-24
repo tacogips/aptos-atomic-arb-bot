@@ -11,6 +11,8 @@ use std::{
     task::{Context, Poll},
 };
 
+use aptos_crypto::x25519;
+
 /// An [`AndThen`] is a transport which applies a closure (F) to all connections created by the
 /// underlying transport.
 pub struct AndThen<T, F> {
@@ -51,8 +53,19 @@ where
         Ok((listener, addr))
     }
 
-    fn dial(&self, peer_id: PeerId, addr: NetworkAddress) -> Result<Self::Outbound, Self::Error> {
-        let fut = self.transport.dial(peer_id, addr.clone())?;
+    fn dial(
+        &self,
+        self_peer_private_key: x25519::PrivateKey,
+        oinori_self_peer_id: PeerId,
+        peer_id: PeerId,
+        addr: NetworkAddress,
+    ) -> Result<Self::Outbound, Self::Error> {
+        let fut = self.transport.dial(
+            self_peer_private_key,
+            oinori_self_peer_id,
+            peer_id,
+            addr.clone(),
+        )?;
         let origin = ConnectionOrigin::Outbound;
         let f = self.function.clone();
 

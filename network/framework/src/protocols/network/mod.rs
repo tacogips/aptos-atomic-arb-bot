@@ -30,6 +30,8 @@ use std::{cmp::min, fmt::Debug, future, marker::PhantomData, pin::Pin, sync::Arc
 pub trait Message: DeserializeOwned + Serialize {}
 impl<T: DeserializeOwned + Serialize> Message for T {}
 
+use aptos_crypto::x25519;
+
 /// Events received by network clients in a validator
 ///
 /// We assume here that for every consumer of this API there's a singleton message type, `TMessage`,
@@ -370,8 +372,19 @@ impl<TMessage> NewNetworkSender for NetworkSender<TMessage> {
 impl<TMessage> NetworkSender<TMessage> {
     /// Request that a given Peer be dialed at the provided `NetworkAddress` and
     /// synchronously wait for the request to be performed.
-    pub async fn dial_peer(&self, peer: PeerId, addr: NetworkAddress) -> Result<(), NetworkError> {
-        self.connection_reqs_tx.dial_peer(peer, addr).await?;
+    ///
+    /// oinori: Accepts an ephemeral identity (private key + PeerId) that will be used
+    /// in the Noise handshake, making the validator see a unique client per connection.
+    pub async fn dial_peer(
+        &self,
+        oinori_self_peer_key: x25519::PrivateKey,
+        oinori_self_peer_id: PeerId,
+        peer: PeerId,
+        addr: NetworkAddress,
+    ) -> Result<(), NetworkError> {
+        self.connection_reqs_tx
+            .dial_peer(oinori_self_peer_key, oinori_self_peer_id, peer, addr)
+            .await?;
         Ok(())
     }
 

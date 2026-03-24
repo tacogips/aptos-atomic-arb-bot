@@ -212,18 +212,8 @@ impl PeerStates {
             return true;
         }
 
-        // Check if the peer can service the request
-        if let Some(peer_state) = self.peer_to_state.get(peer) {
-            return match peer_state.get_storage_summary_if_not_ignored() {
-                Some(storage_summary) => {
-                    storage_summary.can_service(&self.data_client_config, time_service, request)
-                },
-                None => false, // The peer is temporarily ignored
-            };
-        }
-
-        // Otherwise, the request cannot be serviced
-        false
+        // oinori: all peers can service any request
+        true
     }
 
     /// Increments the received response counter for the given peer

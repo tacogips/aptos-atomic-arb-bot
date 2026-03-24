@@ -1,0 +1,53 @@
+services:
+  # Oinori MEV node - standard mode
+  oinori:
+    build:
+      context: .
+      dockerfile: docker/builder/oinori.Dockerfile
+      args:
+        BUILT_VIA_BUILDKIT: "true"
+
+    environment:
+      OINORI_NODE_ID: oinori_node
+      RUST_LOG: info
+
+    volumes:
+      - ./data/aptos_mainnet_data:/opt/aptos/data
+
+    command: ["/usr/local/bin/aptos-node", "-f", "/opt/aptos/fullnode.yaml"]
+
+    network_mode: "host"
+
+    expose:
+      - 8080
+      - 9023
+      - 16182
+
+    restart: unless-stopped
+
+  # Oinori MEV node - dry-run mode (no actual transactions submitted)
+  oinori-dry-run:
+    build:
+      context: .
+      dockerfile: docker/builder/oinori.Dockerfile
+      args:
+        BUILT_VIA_BUILDKIT: "true"
+
+    environment:
+      OINORI_NODE_ID: oinori_node_dry_run
+      OINORI_MEV_DRY_RUN: 1
+      RUST_LOG: info
+
+    volumes:
+      - ./data/aptos_mainnet_data:/opt/aptos/data
+
+    command: ["/usr/local/bin/aptos-node", "-f", "/opt/aptos/fullnode.yaml"]
+
+    network_mode: "host"
+
+    expose:
+      - 8080
+      - 9023
+      - 16182
+
+    restart: unless-stopped

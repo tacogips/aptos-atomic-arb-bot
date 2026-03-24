@@ -1,0 +1,25 @@
+[package]
+name = 'oinori_swap_v1'
+version = '1.0.0'
+
+
+[dependencies]
+Liquidswap = { local = "./interface/pontem-Liquidswap" }
+HippoAggregator = { local = "./interface/hippo-aggregator" }
+
+
+[dependencies.AptosFramework]
+git = 'https://github.com/aptos-labs/aptos-core.git'
+rev = 'mainnet'
+subdir = 'aptos-move/framework/aptos-framework'
+
+
+[dependencies.AptosStdlib]
+git = 'https://github.com/aptos-labs/aptos-core.git'
+rev = 'mainnet'
+subdir = 'aptos-move/framework/aptos-stdlib'
+
+
+[addresses]
+std = "0x1"
+#liquidswap = "0x190d44266241744264b964a37b8f09863167a12d3e70cda39376cfb4e3561e12"

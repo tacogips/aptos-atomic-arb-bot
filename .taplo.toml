@@ -1,0 +1,8 @@
+
+#include = []
+exclude = ["**/Cargo.lock"]
+
+#https://taplo.tamasfe.dev/configuration/formatter-options.html
+[formatting]
+indent_string = "    "
+column_width = 80

@@ -24,6 +24,8 @@ tokio = { workspace = true }
 tokio-util = { workspace = true }
 url = { workspace = true }
 
+aptos-crypto = { workspace = true }
+
 [dev-dependencies]
 aptos-memsocket = { workspace = true }
 aptos-types = { workspace = true, features = ["fuzzing"] }

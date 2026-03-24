@@ -51,7 +51,12 @@ impl Transport for MemoryTransport {
         Ok((Listener::new(listener), listen_addr))
     }
 
-    fn dial(&self, _peer_id: PeerId, addr: NetworkAddress) -> Result<Self::Outbound, Self::Error> {
+    fn dial(
+        &self,
+        _oinori_self_peer_id: PeerId,
+        _peer_id: PeerId,
+        addr: NetworkAddress,
+    ) -> Result<Self::Outbound, Self::Error> {
         let (port, _addr_suffix) = parse_memory(addr.as_slice()).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -126,7 +131,7 @@ mod test {
             assert_eq!(buf, b"hello world");
         };
         let peer_id = PeerId::random();
-        let outbound = t.dial(peer_id, addr)?;
+        let outbound = t.dial(PeerId::random(), peer_id, addr)?;
 
         let dialer = async move {
             let mut socket = outbound.await.unwrap();
@@ -146,7 +151,11 @@ mod test {
         assert!(result.is_err());
 
         let peer_id = PeerId::random();
-        let result = t.dial(peer_id, "/ip4/127.0.0.1/tcp/22".parse().unwrap());
+        let result = t.dial(
+            PeerId::random(),
+            peer_id,
+            "/ip4/127.0.0.1/tcp/22".parse().unwrap(),
+        );
         assert!(result.is_err());
     }
 }

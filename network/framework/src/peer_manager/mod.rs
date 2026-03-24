@@ -430,7 +430,13 @@ where
         );
         self.sample_connected_peers();
         match request {
-            ConnectionRequest::DialPeer(requested_peer_id, addr, response_tx) => {
+            ConnectionRequest::DialPeer(
+                oinori_self_peer_key,
+                oinori_self_peer_id,
+                requested_peer_id,
+                addr,
+                response_tx,
+            ) => {
                 // Only dial peers which we aren't already connected with
                 if let Some((curr_connection, _)) = self.active_peers.get(&requested_peer_id) {
                     let error = PeerManagerError::AlreadyConnected(curr_connection.addr.clone());
@@ -454,7 +460,14 @@ where
                         );
                     }
                 } else {
-                    let request = TransportRequest::DialPeer(requested_peer_id, addr, response_tx);
+                    let request = TransportRequest::DialPeer(
+                        oinori_self_peer_key,
+                        oinori_self_peer_id,
+                        requested_peer_id,
+                        addr,
+                        response_tx,
+                    );
+
                     self.transport_reqs_tx.send(request).await.unwrap();
                 };
             },
@@ -494,14 +507,7 @@ where
 
     /// Sends an outbound request for `RPC` or `DirectSend` to the peer
     async fn handle_outbound_request(&mut self, request: PeerManagerRequest) {
-        trace!(
-            NetworkSchema::new(&self.network_context),
-            peer_manager_request = request,
-            "{} PeerManagerRequest::{:?}",
-            self.network_context,
-            request
-        );
-        self.sample_connected_peers();
+        // oinori: skip trace logging for performance
         let (peer_id, protocol_id, peer_request) = match request {
             PeerManagerRequest::SendDirectSend(peer_id, msg) => {
                 (peer_id, msg.protocol_id(), PeerRequest::SendDirectSend(msg))
@@ -611,6 +617,9 @@ where
         // Check for and handle simultaneous dialing
         if let Entry::Occupied(active_entry) = self.active_peers.entry(peer_id) {
             let (curr_conn_metadata, _) = active_entry.get();
+            // oinori: Use the network context's PeerId (persistent node identity) for
+            // tie-breaking rather than the ephemeral per-connection PeerId, since the
+            // connection metadata now uses rotating identities.
             if Self::simultaneous_dial_tie_breaking(
                 self.network_context.peer_id(),
                 peer_id,
@@ -667,6 +676,7 @@ where
         // Save PeerRequest sender to `active_peers`.
         self.active_peers
             .insert(peer_id, (conn_meta.clone(), peer_reqs_tx));
+
         self.peers_and_metadata.insert_connection_metadata(
             PeerNetworkId::new(self.network_context.network_id(), peer_id),
             conn_meta.clone(),

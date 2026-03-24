@@ -208,7 +208,9 @@ impl Context {
         let (req_sender, callback) = oneshot::channel();
         self.mp_sender
             .clone()
-            .send(MempoolClientRequest::SubmitTransaction(txn, req_sender))
+            .send(MempoolClientRequest::SubmitTransaction(
+                txn, req_sender, None,
+            ))
             .await?;
 
         callback.await?

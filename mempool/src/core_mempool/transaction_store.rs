@@ -226,55 +226,7 @@ impl TransactionStore {
         let txn_seq_num = txn.sequence_info.transaction_sequence_number;
         let acc_seq_num = txn.sequence_info.account_sequence_number;
 
-        // If the transaction is already in Mempool, we only allow the user to
-        // increase the gas unit price to speed up a transaction, but not the max gas.
-        //
-        // Transactions with all the same inputs (but possibly signed differently) are idempotent
-        // since the raw transaction is the same
-        if let Some(txns) = self.transactions.get_mut(&address) {
-            if let Some(current_version) = txns.get_mut(&txn_seq_num) {
-                if current_version.txn.payload() != txn.txn.payload() {
-                    return MempoolStatus::new(MempoolStatusCode::InvalidUpdate).with_message(
-                        "Transaction already in mempool with a different payload".to_string(),
-                    );
-                } else if current_version.txn.expiration_timestamp_secs()
-                    != txn.txn.expiration_timestamp_secs()
-                {
-                    return MempoolStatus::new(MempoolStatusCode::InvalidUpdate).with_message(
-                        "Transaction already in mempool with a different expiration timestamp"
-                            .to_string(),
-                    );
-                } else if current_version.txn.max_gas_amount() != txn.txn.max_gas_amount() {
-                    return MempoolStatus::new(MempoolStatusCode::InvalidUpdate).with_message(
-                        "Transaction already in mempool with a different max gas amount"
-                            .to_string(),
-                    );
-                } else if current_version.get_gas_price() < txn.get_gas_price() {
-                    // Update txn if gas unit price is a larger value than before
-                    if let Some(txn) = txns.remove(&txn_seq_num) {
-                        self.index_remove(&txn);
-                    };
-                    counters::CORE_MEMPOOL_GAS_UPGRADED_TXNS.inc();
-                } else if current_version.get_gas_price() > txn.get_gas_price() {
-                    return MempoolStatus::new(MempoolStatusCode::InvalidUpdate).with_message(
-                        "Transaction already in mempool with a higher gas price".to_string(),
-                    );
-                } else {
-                    // If the transaction is the same, it's an idempotent call
-                    // Updating signers is not supported, the previous submission must fail
-                    counters::CORE_MEMPOOL_IDEMPOTENT_TXNS.inc();
-                    return MempoolStatus::new(MempoolStatusCode::Accepted);
-                }
-            }
-        }
-
-        if self.check_is_full_after_eviction(&txn, acc_seq_num) {
-            return MempoolStatus::new(MempoolStatusCode::MempoolIsFull).with_message(format!(
-                "Mempool is full. Mempool size: {}, Capacity: {}",
-                self.system_ttl_index.size(),
-                self.capacity,
-            ));
-        }
+        // oinori: skip duplicate tx check for performance
 
         self.clean_committed_transactions(&address, acc_seq_num);
 
@@ -348,80 +300,8 @@ impl TransactionStore {
         counters::core_mempool_index_size(counters::SIZE_BYTES_LABEL, self.size_bytes);
     }
 
-    /// Checks if Mempool is full.
-    /// If it's full, tries to free some space by evicting transactions from the ParkingLot.
-    /// We only evict on attempt to insert a transaction that would be ready for broadcast upon insertion.
-    fn check_is_full_after_eviction(
-        &mut self,
-        txn: &MempoolTransaction,
-        curr_sequence_number: u64,
-    ) -> bool {
-        if self.is_full() && self.check_txn_ready(txn, curr_sequence_number) {
-            let now = Instant::now();
-            // try to free some space in Mempool from ParkingLot by evicting non-ready txns
-            let mut evicted_txns = 0;
-            let mut evicted_bytes = 0;
-            while let Some(txn_pointer) = self.parking_lot_index.get_poppable() {
-                if let Some(txn) = self
-                    .transactions
-                    .get_mut(&txn_pointer.sender)
-                    .and_then(|txns| txns.remove(&txn_pointer.sequence_number))
-                {
-                    debug!(
-                        LogSchema::new(LogEntry::MempoolFullEvictedTxn).txns(TxnsLog::new_txn(
-                            txn.get_sender(),
-                            txn.sequence_info.transaction_sequence_number
-                        ))
-                    );
-                    evicted_bytes += txn.get_estimated_bytes() as u64;
-                    evicted_txns += 1;
-                    self.index_remove(&txn);
-                    if !self.is_full() {
-                        break;
-                    }
-                } else {
-                    error!("Transaction not found in mempool while evicting from parking lot");
-                    break;
-                }
-            }
-            if evicted_txns > 0 {
-                counters::CORE_MEMPOOL_PARKING_LOT_EVICTED_COUNT.observe(evicted_txns as f64);
-                counters::CORE_MEMPOOL_PARKING_LOT_EVICTED_BYTES.observe(evicted_bytes as f64);
-                counters::CORE_MEMPOOL_PARKING_LOT_EVICTED_LATENCY
-                    .observe(now.elapsed().as_secs_f64());
-            }
-        }
-        self.is_full()
-    }
-
     fn is_full(&self) -> bool {
         self.system_ttl_index.size() >= self.capacity || self.size_bytes >= self.capacity_bytes
-    }
-
-    /// Check if a transaction would be ready for broadcast in mempool upon insertion (without inserting it).
-    /// Two ways this can happen:
-    /// 1. txn sequence number == curr_sequence_number
-    /// (this handles both cases where, (1) txn is first possible txn for an account and (2) the
-    /// previous txn is committed).
-    /// 2. The txn before this is ready for broadcast but not yet committed.
-    fn check_txn_ready(&self, txn: &MempoolTransaction, curr_sequence_number: u64) -> bool {
-        let tx_sequence_number = txn.sequence_info.transaction_sequence_number;
-        if tx_sequence_number == curr_sequence_number {
-            return true;
-        } else if tx_sequence_number == 0 {
-            // shouldn't really get here because filtering out old txn sequence numbers happens earlier in workflow
-            unreachable!("[mempool] already committed txn detected, cannot be checked for readiness upon insertion");
-        }
-
-        // check previous txn in sequence is ready
-        if let Some(account_txns) = self.transactions.get(&txn.get_sender()) {
-            if let Some(prev_txn) = account_txns.get(&(tx_sequence_number - 1)) {
-                if let TimelineState::Ready(_) = prev_txn.timeline_state {
-                    return true;
-                }
-            }
-        }
-        false
     }
 
     fn log_ready_transaction(

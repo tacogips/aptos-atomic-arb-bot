@@ -5,6 +5,7 @@ set -e
 
 PROFILE=${PROFILE:-release}
 FEATURES=${FEATURES:-""}
+CARGO_TARGET_DIR="target/${FEATURES:-"default"}"
 
 echo "Building aptos-node"
 echo "PROFILE: $PROFILE"
@@ -23,7 +24,7 @@ for PACKAGE in "${PACKAGES[@]}"; do
     if [ -n "$FEATURES" ] && [ "$PACKAGE" = "aptos-node" ]; then
         echo "Building aptos-node with features ${FEATURES}"
         cargo build --profile=$PROFILE --features=$FEATURES -p $PACKAGE "$@"
-    else 
+    else
         # Build aptos-node separately
         cargo build --locked --profile=$PROFILE -p $PACKAGE "$@"
     fi

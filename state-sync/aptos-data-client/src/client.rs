@@ -141,7 +141,6 @@ impl AptosDataClient {
             storage,
             time_service,
         );
-
         (data_client, data_summary_poller)
     }
 
@@ -276,37 +275,8 @@ impl AptosDataClient {
         }
 
         // Otherwise, determine the number of peers to select for the request
-        let multi_fetch_config = self.data_client_config.data_multi_fetch_config;
-        let num_peers_for_request = if multi_fetch_config.enable_multi_fetch {
-            // Calculate the total number of priority serviceable peers
-            let mut num_serviceable_peers = 0;
-            for (index, peers) in serviceable_peers_by_priorities.iter().enumerate() {
-                // Only include the lowest priority peers if no other peers are
-                // available (the lowest priority peers are generally unreliable).
-                if (num_serviceable_peers == 0)
-                    || (index < serviceable_peers_by_priorities.len() - 1)
-                {
-                    num_serviceable_peers += peers.len();
-                }
-            }
-
-            // Calculate the number of peers to select for the request
-            let peer_ratio_for_request =
-                num_serviceable_peers / multi_fetch_config.multi_fetch_peer_bucket_size;
-            let mut num_peers_for_request = multi_fetch_config.min_peers_for_multi_fetch
-                + (peer_ratio_for_request * multi_fetch_config.additional_requests_per_peer_bucket);
-
-            // Bound the number of peers by the number of serviceable peers
-            num_peers_for_request = min(num_peers_for_request, num_serviceable_peers);
-
-            // Ensure the number of peers is no larger than the maximum
-            min(
-                num_peers_for_request,
-                multi_fetch_config.max_peers_for_multi_fetch,
-            )
-        } else {
-            1 // Multi-fetch is disabled (only select a single peer)
-        };
+        // oinori: fixed peer count
+        let num_peers_for_request = 2;
 
         // Verify that we have at least one peer to service the request
         if num_peers_for_request == 0 {
@@ -383,9 +353,9 @@ impl AptosDataClient {
         // Select peers by priority (starting with the highest priority first)
         let mut selected_peers = HashSet::new();
         for serviceable_peers in serviceable_peers_by_priorities {
-            // Select peers by distance and latency
+            // oinori: choose randomly instead of weighted by latency
             let num_peers_remaining = num_peers_for_request.saturating_sub(selected_peers.len());
-            let peers = self.choose_random_peers_by_latency(serviceable_peers, num_peers_remaining);
+            let peers = utils::choose_random_peers(num_peers_remaining, serviceable_peers);
 
             // Add the peers to the entire set
             selected_peers.extend(peers);
@@ -522,7 +492,26 @@ impl AptosDataClient {
         utils::extend_with_random_peers(selected_peers, serviceable_peers, num_peers_to_choose)
     }
 
-    /// Identifies the peers with the specified priority that can service the given request
+    /// oinori: choose peers for tx send by latency
+    pub fn choose_peer_for_oinori_tx_send(&self, num: usize) -> Result<Vec<PeerNetworkId>, Error> {
+        let (priority_peers, _regular_peers) = self.get_priority_and_regular_peers()?;
+        let serviceable_peers = if !priority_peers.is_empty() {
+            priority_peers
+        } else {
+            return Err(Error::DataIsUnavailable(
+                "no peers for oinori tx send".to_string(),
+            ));
+        };
+
+        let choose_num = std::cmp::min(num, serviceable_peers.len());
+        Ok(self
+            .choose_random_peers_by_latency(serviceable_peers, choose_num)
+            .into_iter()
+            .collect())
+    }
+
+    /// Identifies the peers in the given set of prospective peers
+    /// that can service the specified request.
     fn identify_serviceable(
         &self,
         peers_by_priorities: &BTreeMap<PeerPriority, HashSet<PeerNetworkId>>,
@@ -783,13 +772,7 @@ impl AptosDataClient {
             .await;
         match result {
             Ok(response) => {
-                trace!(
-                    (LogSchema::new(LogEntry::StorageServiceResponse)
-                        .event(LogEvent::ResponseSuccess)
-                        .request_type(&request.get_label())
-                        .request_id(id)
-                        .peer(&peer))
-                );
+                // oinori: skip trace logging for performance
 
                 // Update the received response metrics
                 self.update_received_response_metrics(peer, &request);

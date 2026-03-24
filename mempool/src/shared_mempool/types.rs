@@ -235,7 +235,11 @@ pub type SubmissionStatus = (MempoolStatus, Option<DiscardedVMStatus>);
 pub type SubmissionStatusBundle = (SignedTransaction, SubmissionStatus);
 
 pub enum MempoolClientRequest {
-    SubmitTransaction(SignedTransaction, oneshot::Sender<Result<SubmissionStatus>>),
+    SubmitTransaction(
+        SignedTransaction,
+        oneshot::Sender<Result<SubmissionStatus>>,
+        Option<Vec<PeerNetworkId>>, // oinori: broadcast peer IDs
+    ),
     GetTransactionByHash(HashValue, oneshot::Sender<Option<SignedTransaction>>),
 }
 

@@ -1,0 +1,151 @@
+base:
+  # Update this value to the location you want the node to store its database
+  data_dir: "/opt/aptos/data"
+  role: "full_node"
+  waypoint:
+    # Update this value to that which the blockchain publicly provides. Please regard the directions
+    # below on how to safely manage your genesis_file_location with respect to the waypoint.
+    from_file: "/opt/aptos/genesis/waypoint.txt"
+
+execution:
+  # Update this to the location to where the genesis.blob is stored, prefer fullpaths
+  # Note, this must be paired with a waypoint. If you update your waypoint without a
+  # corresponding genesis, the file location should be an empty path.
+  genesis_file_location: "/opt/aptos/genesis/genesis.blob"
+
+api:
+  enabled: true
+  address: "0.0.0.0:8080"
+
+full_node_networks:
+  - network_id: "public"
+    discovery_method: "onchain"
+    listen_address: "/ip4/0.0.0.0/tcp/6182"
+
+inspection_service:
+  address: "0.0.0.0"
+  port: 9023
+  expose_configuration: false
+  expose_system_information: true
+
+# can disk save with these?
+state_sync:
+  state_sync_driver:
+    bootstrapping_mode: DownloadLatestStates
+    #bootstrapping_mode: ApplyTransactionOutputsFromGenesis
+    continuous_syncing_mode: ApplyTransactionOutputs
+    num_versions_to_skip_snapshot_sync: 1000000000
+    progress_check_interval_ms: 5
+    max_pending_data_chunks: 100
+
+  data_streaming_service:
+    global_summary_refresh_interval_ms: 5
+    max_concurrent_requests: 12
+    max_concurrent_state_requests: 12
+    max_data_stream_channel_sizes: 100
+
+  aptos_data_client:
+    max_state_chunk_size: 8000
+    max_transaction_chunk_size: 6000
+    max_transaction_output_chunk_size: 3000
+
+
+
+#
+#full_node_networks:
+#  - discovery_method: "onchain" # get all validator set from chain
+#    #discovery_methods:
+#    # - "onchain"
+#    # - "file"
+#    # The network must have a listen address to specify protocols. This runs it locally to
+#    # prevent remote, incoming connections.
+#    listen_address: "/ip4/0.0.0.0/tcp/16182"
+#    network_id: "public"
+#    # Define the upstream peers to connect to
+#    # https://discord.com/channels/945856774056083548/1031670388951879742/1032891741910597653
+#    # https://aptos.dev/nodes/full-node/network-identity-fullnode/
+#    #seeds: {}
+#    max_outbound_connections: 80 ## (tacogips) important?
+#    connectivity_check_interval_ms: 1000 ## (tacogips) important?
+#
+#    seeds:
+#      #568fdb6acf26aae2a84419108ff13baa3ebf133844ef18e23a9f47b5af16b698:
+#      #  addresses:
+#      #    - /dns/node1.cloud-b.mainnet.aptoslabs.com/tcp/6182/noise-ik/0x003cc2ed36e7d486539ac2c411b48d962f1ef17d884c3a7109cad43f16bd5008/handshake/0
+#      #  keys:
+#      #    - "0x003cc2ed36e7d486539ac2c411b48d962f1ef17d884c3a7109cad43f16bd5008"
+#      #  role: Upstream
+#      c48683f9f684d2845c18e8d33d5f6c8581acfc1eb1c78b1de25562d136877e10:
+#        addresses:
+#          - /dns/node2.cloud-b.mainnet.aptoslabs.com/tcp/6182/noise-ik/0xe3aa2a357e9be7bd63b97c4b3125b05b8da680843f3aa70677dee962b2c86329/handshake/0
+#        keys:
+#          - "0xe3aa2a357e9be7bd63b97c4b3125b05b8da680843f3aa70677dee962b2c86329"
+#        role: Upstream
+#
+#state_sync:
+#  state_sync_driver:
+#    ##
+#    #   "apply_transaction_outputs_from_genesis"
+#    #   "download_latest_states",
+#    #   "execute_transactions_from_genesis" (default)
+#    #   if you use DownloadLatestStates, it's unabilable to get transaction by hash
+#    #bootstrapping_mode: DownloadLatestStates
+#    #    bootstrapping_mode: ApplyTransactionOutputsFromGenesis
+#
+#    # "apply_transaction_outputs",
+#    # "execute_transactions" (default)
+#    continuous_syncing_mode: ApplyTransactionOutputs
+#
+#    # default: 100 (ms)
+#    progress_check_interval_ms: 10
+#    commit_notification_timeout_ms: 5000 #???
+#    max_connection_deadline_secs: 10
+#    max_consecutive_stream_notifications: 30 ## important?
+#    max_num_stream_timeouts: 2
+#    max_pending_data_chunks: 400
+#    max_stream_wait_time_ms: 5000
+#    num_versions_to_skip_snapshot_sync: 100000000 # At 5k TPS this allows a node to fail for about 6 hours.
+#
+#  storage_service: ## == network client in aptos data client
+#    max_epoch_chunk_size: 100
+#    max_lru_cache_size: 500 # At ~0.6MiB per chunk this should take no more than 0.5GiB
+#    max_network_channel_size: 4000
+#    max_network_chunk_bytes: 4194304 # 4MiB
+#    max_state_chunk_size: 2000
+#    # max_subscription_period_ms: 2000 ## TODO tacogips important?
+#    max_transaction_chunk_size: 2000
+#    max_transaction_output_chunk_size: 2000
+#    #storage_summary_refresh_interval_ms: 50
+#    storage_summary_refresh_interval_ms: 1
+#    min_time_to_ignore_peers_secs: 300 #??
+#    request_moderator_refresh_interval_ms: 1000 #???
+#
+#  aptos_data_client:
+#    data_poller_config:
+#      max_num_in_flight_priority_polls: 3
+#      max_num_in_flight_regular_polls: 4
+#
+#    response_timeout_ms: 2000
+#    use_compression: true
+#
+#  data_streaming_service:
+#    global_summary_refresh_interval_ms: 50 #?
+#    max_concurrent_requests: 8
+#    max_concurrent_state_requests: 12
+#    max_data_stream_channel_sizes: 300
+#    max_request_retry: 5
+#    max_notification_id_mappings: 300
+#    progress_check_interval_ms: 50
+#
+##mempool:
+##  #shared_mempool_max_concurrent_inbound_syncs: 16 # default 4
+##  #shared_mempool_max_concurrent_inbound_syncs: 12 # default 4
+##  shared_mempool_max_concurrent_inbound_syncs: 4 # default 4
+##  #max_broadcasts_per_peer: 4 # default 1
+##  max_broadcasts_per_peer: 4 # default 1
+##  default_failovers: 50 # default 3
+##  shared_mempool_batch_size: 200 # default 100
+##
+##  shared_mempool_backoff_interval_ms: 5000 # default 30_000
+##  shared_mempool_tick_interval_ms: 50 # default 50
+#

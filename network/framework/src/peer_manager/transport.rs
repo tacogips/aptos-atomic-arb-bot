@@ -24,10 +24,15 @@ use futures::{
 };
 use std::time::Instant;
 
+use aptos_crypto::x25519;
+
 #[derive(Debug)]
 pub enum TransportRequest {
+    /// oinori: Extended with ephemeral identity fields for connection pool ID rotation.
     DialPeer(
-        PeerId,
+        x25519::PrivateKey, // oinori: ephemeral private key for Noise handshake
+        PeerId,             // oinori: ephemeral PeerId derived from the key above
+        PeerId,             // target peer to dial
         NetworkAddress,
         oneshot::Sender<Result<(), PeerManagerError>>,
     ),
@@ -110,6 +115,7 @@ where
                     }
                 },
                 (upgrade, addr, peer_id, start_time, response_tx) = pending_outbound_connections.select_next_some() => {
+
                     self.handle_completed_outbound_upgrade(upgrade, addr, peer_id, start_time, response_tx).await;
                 },
                 (upgrade, addr, start_time) = pending_inbound_connections.select_next_some() => {
@@ -185,8 +191,19 @@ where
         >,
     > {
         match dial_peer_request {
-            TransportRequest::DialPeer(peer_id, addr, response_tx) => {
-                match self.transport.dial(peer_id, addr.clone()) {
+            TransportRequest::DialPeer(
+                oinori_self_private_key,
+                oinori_self_peer_id,
+                peer_id,
+                addr,
+                response_tx,
+            ) => {
+                match self.transport.dial(
+                    oinori_self_private_key,
+                    oinori_self_peer_id,
+                    peer_id,
+                    addr.clone(),
+                ) {
                     Ok(upgrade) => {
                         counters::pending_connection_upgrades(
                             &self.network_context,

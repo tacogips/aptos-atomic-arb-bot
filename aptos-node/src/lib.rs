@@ -207,6 +207,7 @@ pub struct AptosHandle {
     _state_sync_runtimes: StateSyncRuntimes,
     _telemetry_runtime: Option<Runtime>,
     _indexer_db_runtime: Option<Runtime>,
+    _oinori_mev_runtime: Option<Runtime>,
 }
 
 /// Start an Aptos node
@@ -662,6 +663,7 @@ pub fn setup_environment_and_start_node(
         db_rw.reader.clone(),
     );
 
+    // TODO (tacogips) oinori
     // Start state sync and get the notification endpoints for mempool and consensus
     let (aptos_data_client, state_sync_runtimes, mempool_listener, consensus_notifier) =
         state_sync::start_state_sync_and_get_notification_handles(
@@ -675,7 +677,7 @@ pub fn setup_environment_and_start_node(
     // Start the node inspection service
     services::start_node_inspection_service(
         &node_config,
-        aptos_data_client,
+        aptos_data_client.clone(),
         peers_and_metadata.clone(),
     );
 
@@ -687,6 +689,7 @@ pub fn setup_environment_and_start_node(
         indexer_runtime,
         indexer_grpc_runtime,
         internal_indexer_db_runtime,
+        mempool_client_sender, // oinori: used for mev tx submission
     ) = services::bootstrap_api_and_indexer(&node_config, db_rw.clone(), chain_id, indexer_db_opt)?;
 
     // Create mempool and get the consensus to mempool sender
@@ -713,10 +716,20 @@ pub fn setup_environment_and_start_node(
         &vtxn_pool,
     );
 
+    println!("======== oinori start sync...");
     // Wait until state sync has been initialized
     debug!("Waiting until state sync is initialized!");
     state_sync_runtimes.block_until_initialized();
     debug!("State sync initialization complete.");
+
+    println!("======== oinori finish sync...");
+    // Start oinori MEV runtime
+    let oinori_mev_runtime = oinori_mev::start_oinori_mev(
+        chain_id,
+        aptos_data_client,
+        Arc::clone(&db_rw.reader),
+        mempool_client_sender,
+    )?;
 
     // Create the consensus observer and publisher (if enabled)
     let (consensus_observer_runtime, consensus_publisher_runtime, consensus_publisher) =
@@ -759,7 +772,9 @@ pub fn setup_environment_and_start_node(
         _peer_monitoring_service_runtime: peer_monitoring_service_runtime,
         _state_sync_runtimes: state_sync_runtimes,
         _telemetry_runtime: telemetry_runtime,
+
         _indexer_db_runtime: internal_indexer_db_runtime,
+        _oinori_mev_runtime: Some(oinori_mev_runtime),
     })
 }
 

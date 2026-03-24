@@ -194,13 +194,7 @@ where
 
     pub async fn start(mut self) {
         let remote_peer_id = self.remote_peer_id();
-        trace!(
-            NetworkSchema::new(&self.network_context)
-                .connection_metadata(&self.connection_metadata),
-            "{} Starting Peer actor for peer: {}",
-            self.network_context,
-            remote_peer_id.short_str()
-        );
+        // oinori: trace logging removed to reduce per-message overhead on the hot path
 
         // Split the connection into a ReadHalf and a WriteHalf.
         let (read_socket, write_socket) =
@@ -555,13 +549,7 @@ where
         message: Result<MultiplexMessage, ReadError>,
         write_reqs_tx: &mut aptos_channel::Sender<(), NetworkMessage>,
     ) -> Result<(), PeerManagerError> {
-        trace!(
-            NetworkSchema::new(&self.network_context)
-                .connection_metadata(&self.connection_metadata),
-            "{} Received message from peer {}",
-            self.network_context,
-            self.remote_peer_id().short_str()
-        );
+        // oinori: skip trace logging for performance
 
         let message = match message {
             Ok(message) => message,
@@ -635,6 +623,12 @@ where
             },
             PeerRequest::SendRpc(request) => {
                 let protocol_id = request.protocol_id;
+
+                network_application_outbound_traffic(
+                    self.network_context,
+                    protocol_id,
+                    request.data.len() as u64,
+                );
                 if let Err(e) = self
                     .outbound_rpcs
                     .handle_outbound_request(request, write_reqs_tx)

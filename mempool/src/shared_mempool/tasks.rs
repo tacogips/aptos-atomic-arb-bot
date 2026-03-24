@@ -16,7 +16,6 @@ use crate::{
         },
         use_case_history::UseCaseHistory,
     },
-    thread_pool::IO_POOL,
     QuorumStoreRequest, QuorumStoreResponse, SubmissionStatus,
 };
 use anyhow::Result;
@@ -28,22 +27,23 @@ use aptos_logger::prelude::*;
 use aptos_mempool_notifications::CommittedTransaction;
 use aptos_metrics_core::HistogramTimer;
 use aptos_network::application::interface::NetworkClientInterface;
-use aptos_storage_interface::state_view::LatestDbStateCheckpointView;
 use aptos_types::{
     mempool_status::{MempoolStatus, MempoolStatusCode},
     on_chain_config::{OnChainConfigPayload, OnChainConfigProvider, OnChainConsensusConfig},
     transaction::SignedTransaction,
     vm_status::{DiscardedVMStatus, StatusCode},
 };
-use aptos_vm_validator::vm_validator::{get_account_sequence_number, TransactionValidation};
+use aptos_vm_validator::vm_validator::TransactionValidation;
 use futures::{channel::oneshot, stream::FuturesUnordered};
-use rayon::prelude::*;
 use std::{
     cmp,
     sync::Arc,
     time::{Duration, Instant},
 };
 use tokio::runtime::Handle;
+
+// oinori: for skipping VM validation
+use aptos_types::transaction::VMValidatorResult;
 
 // ============================== //
 //  broadcast_coordinator tasks  //
@@ -58,13 +58,13 @@ pub(crate) async fn execute_broadcast<NetworkClient, TransactionValidator>(
     executor: Handle,
 ) where
     NetworkClient: NetworkClientInterface<MempoolSyncMsg>,
-    TransactionValidator: TransactionValidation,
+    TransactionValidator: TransactionValidation + 'static,
 {
     let network_interface = &smp.network_interface.clone();
     // If there's no connection, don't bother to broadcast
     if network_interface.sync_states_exists(&peer) {
         if let Err(err) = network_interface
-            .execute_broadcast(peer, backoff, smp)
+            .execute_broadcast(peer, backoff, smp, true)
             .await
         {
             match err {
@@ -94,11 +94,8 @@ pub(crate) async fn execute_broadcast<NetworkClient, TransactionValidator>(
     }
     let schedule_backoff = network_interface.is_backoff_mode(&peer);
 
-    let interval_ms = if schedule_backoff {
-        smp.config.shared_mempool_backoff_interval_ms
-    } else {
-        smp.config.shared_mempool_tick_interval_ms
-    };
+    // oinori: fixed 30 sec interval
+    let interval_ms = 30_000;
 
     scheduled_broadcasts.push(ScheduledBroadcast::new(
         Instant::now() + Duration::from_millis(interval_ms),
@@ -191,28 +188,30 @@ pub(crate) async fn process_transaction_broadcast<NetworkClient, TransactionVali
     timer: HistogramTimer,
 ) where
     NetworkClient: NetworkClientInterface<MempoolSyncMsg>,
-    TransactionValidator: TransactionValidation,
+    TransactionValidator: TransactionValidation + 'static,
 {
     timer.stop_and_record();
     let _timer = counters::process_txn_submit_latency_timer(peer.network_id());
-    let results = process_incoming_transactions(&smp, transactions, timeline_state, false);
+
+    let results = process_incoming_transactions(&smp, transactions, timeline_state.clone(), false);
     log_txn_process_results(&results, Some(peer));
 
-    let ack_response = gen_ack_response(message_id, results, &peer);
+    let ack_response = gen_ack_response(message_id, results.clone(), &peer);
 
     // Respond to the peer with an ack. Note: ack response messages should be
     // small enough that they always fit within the maximum network message
     // size, so there's no need to check them here.
     if let Err(e) = smp
         .network_interface
-        .send_message_to_peer(peer, ack_response)
+        .send_message_to_peer(peer, ack_response.clone())
     {
         counters::network_send_fail_inc(counters::ACK_TXNS);
         warn!(
             LogSchema::event_log(LogEntry::BroadcastACK, LogEvent::NetworkSendFail)
                 .peer(&peer)
-                .error(&e.into())
+                .error(&e.clone().into())
         );
+
         return;
     }
     notify_subscribers(SharedMempoolNotification::ACK, &smp.subscribers);
@@ -285,58 +284,12 @@ where
 {
     let mut statuses = vec![];
 
-    let start_storage_read = Instant::now();
-    let state_view = smp
-        .db
-        .latest_state_checkpoint_view()
-        .expect("Failed to get latest state checkpoint view.");
-
-    // Track latency: fetching seq number
-    let seq_numbers = IO_POOL.install(|| {
-        transactions
-            .par_iter()
-            .map(|(t, _, _)| {
-                get_account_sequence_number(&state_view, t.sender()).map_err(|e| {
-                    error!(LogSchema::new(LogEntry::DBError).error(&e));
-                    counters::DB_ERROR.inc();
-                    e
-                })
-            })
-            .collect::<Vec<_>>()
-    });
-    // Track latency for storage read fetching sequence number
-    let storage_read_latency = start_storage_read.elapsed();
-    counters::PROCESS_TXN_BREAKDOWN_LATENCY
-        .with_label_values(&[counters::FETCH_SEQ_NUM_LABEL])
-        .observe(storage_read_latency.as_secs_f64() / transactions.len() as f64);
-
+    // oinori: skip DB state fetching and seq number validation for performance
     let transactions: Vec<_> = transactions
         .into_iter()
-        .enumerate()
-        .filter_map(|(idx, (t, ready_time_at_sender, priority))| {
-            if let Ok(sequence_num) = seq_numbers[idx] {
-                if t.sequence_number() >= sequence_num {
-                    return Some((t, sequence_num, ready_time_at_sender, priority));
-                } else {
-                    statuses.push((
-                        t,
-                        (
-                            MempoolStatus::new(MempoolStatusCode::VmError),
-                            Some(DiscardedVMStatus::SEQUENCE_NUMBER_TOO_OLD),
-                        ),
-                    ));
-                }
-            } else {
-                // Failed to get transaction
-                statuses.push((
-                    t,
-                    (
-                        MempoolStatus::new(MempoolStatusCode::VmError),
-                        Some(DiscardedVMStatus::RESOURCE_DOES_NOT_EXIST),
-                    ),
-                ));
-            }
-            None
+        .map(|(t, ready_time_at_sender, priority)| {
+            let sequence_num = t.sequence_number();
+            (t, sequence_num, ready_time_at_sender, priority)
         })
         .collect();
 
@@ -369,23 +322,16 @@ fn validate_and_add_transactions<NetworkClient, TransactionValidator>(
     NetworkClient: NetworkClientInterface<MempoolSyncMsg>,
     TransactionValidator: TransactionValidation,
 {
-    // Track latency: VM validation
-    let vm_validation_timer = counters::PROCESS_TXN_BREAKDOWN_LATENCY
-        .with_label_values(&[counters::VM_VALIDATION_LABEL])
-        .start_timer();
+    // oinori: skip VM validation for performance, just pre-compute hash and length
     let validation_results = transactions
-        .par_iter()
+        .iter()
         .map(|t| {
-            let result = smp.validator.read().validate_transaction(t.0.clone());
-            // Pre-compute the hash and length if the transaction is valid, before locking mempool
-            if result.is_ok() {
-                t.0.committed_hash();
-                t.0.txn_bytes_len();
-            }
-            result
+            t.0.committed_hash();
+            t.0.txn_bytes_len();
+            Ok(VMValidatorResult::new(None, t.0.gas_unit_price()))
         })
-        .collect::<Vec<_>>();
-    vm_validation_timer.stop_and_record();
+        .collect::<Vec<Result<_>>>();
+
     {
         let mut mempool = smp.mempool.lock();
         for (idx, (transaction, sequence_info, ready_time_at_sender, priority)) in

@@ -24,6 +24,8 @@ pub mod memory;
 pub mod proxy_protocol;
 pub mod tcp;
 
+use aptos_crypto::x25519;
+
 /// Origin of how a Connection was established.
 #[derive(Clone, Copy, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub enum ConnectionOrigin {
@@ -110,7 +112,17 @@ pub trait Transport {
         Self: Sized;
 
     /// Dials the given [`NetworkAddress`], returning a future for a pending outbound connection.
-    fn dial(&self, peer_id: PeerId, addr: NetworkAddress) -> Result<Self::Outbound, Self::Error>
+    ///
+    /// oinori: Extended to accept an ephemeral x25519 private key and PeerId.
+    /// These are threaded through the entire transport stack and used during the
+    /// Noise handshake so that each outbound connection presents a unique identity.
+    fn dial(
+        &self,
+        self_peer_private_key: x25519::PrivateKey,
+        oinori_self_peer_id: PeerId,
+        peer_id: PeerId,
+        addr: NetworkAddress,
+    ) -> Result<Self::Outbound, Self::Error>
     where
         Self: Sized;
 }

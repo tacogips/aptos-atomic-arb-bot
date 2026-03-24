@@ -1088,7 +1088,9 @@ impl<'a, S: StateView> MoveConverter<'a, S> {
         }
     }
 
-    fn explain_function_index(&self, module_id: &ModuleId, function: &u16) -> Result<String> {
+    //TODO(oinori )
+    //fn explain_function_index(&self, module_id: &ModuleId, function: &u16) -> Result<String> {
+    pub fn explain_function_index(&self, module_id: &ModuleId, function: &u16) -> Result<String> {
         let code = self.inner.view_existing_module(module_id)?;
         let func = code.function_handle_at(FunctionHandleIndex::new(*function));
         let id = code.identifier_at(func.name);

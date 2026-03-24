@@ -19,6 +19,7 @@ use crate::{
     },
     MempoolEventsReceiver, QuorumStoreRequest,
 };
+
 use aptos_bounded_executor::BoundedExecutor;
 use aptos_config::network_id::{NetworkId, PeerNetworkId};
 use aptos_event_notifications::ReconfigNotificationListener;
@@ -173,7 +174,7 @@ async fn handle_client_request<NetworkClient, TransactionValidator>(
     TransactionValidator: TransactionValidation + 'static,
 {
     match request {
-        MempoolClientRequest::SubmitTransaction(txn, callback) => {
+        MempoolClientRequest::SubmitTransaction(txn, callback, broadcast_peer_ids) => {
             // This timer measures how long it took for the bounded executor to *schedule* the
             // task.
             let _timer = counters::task_spawn_latency_timer(
@@ -187,13 +188,38 @@ async fn handle_client_request<NetworkClient, TransactionValidator>(
             );
             smp.network_interface
                 .num_mempool_txns_received_since_peers_updated += 1;
+
+            let broadcast_peer_ids_cloned = broadcast_peer_ids.clone();
+            let mut cloned_smp = smp.clone();
             bounded_executor
-                .spawn(tasks::process_client_transaction_submission(
-                    smp.clone(),
-                    txn,
-                    callback,
-                    task_start_timer,
-                ))
+                .spawn(
+                    tasks::process_client_transaction_submission(
+                        smp.clone(),
+                        txn,
+                        callback,
+                        task_start_timer,
+                    )
+                    .then(move |prev_output| async move {
+                        // TODO (tacogips)oinori broadcast the tx immediately
+                        if let Some(broadcast_peer_ids) = broadcast_peer_ids_cloned {
+                            for (index, broadcast_peer_id) in
+                                broadcast_peer_ids.into_iter().enumerate()
+                            {
+                                let network_interface = &cloned_smp.network_interface.clone();
+                                let broadcast_result = network_interface
+                                    .execute_broadcast(
+                                        broadcast_peer_id.clone(),
+                                        false,
+                                        &mut cloned_smp,
+                                        false,
+                                    )
+                                    .await;
+                            }
+                        }
+
+                        prev_output
+                    }),
+                )
                 .await;
         },
         MempoolClientRequest::GetTransactionByHash(hash, callback) => {
@@ -390,6 +416,7 @@ async fn handle_network_event<NetworkClient, TransactionValidator>(
                     backoff,
                 } => {
                     let ack_timestamp = SystemTime::now();
+
                     smp.network_interface.process_broadcast_ack(
                         PeerNetworkId::new(network_id, peer_id),
                         message_id,

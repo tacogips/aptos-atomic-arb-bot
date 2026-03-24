@@ -13,6 +13,8 @@ use futures::channel::oneshot;
 use serde::Serialize;
 use std::fmt;
 
+use aptos_crypto::x25519;
+
 /// Request received by PeerManager from upstream actors.
 #[derive(Debug, Serialize)]
 pub enum PeerManagerRequest {
@@ -24,8 +26,12 @@ pub enum PeerManagerRequest {
 
 #[derive(Debug, Serialize)]
 pub enum ConnectionRequest {
+    /// oinori: DialPeer now carries an ephemeral identity (private key + PeerId)
+    /// for the connection pool identity rotation mechanism.
     DialPeer(
-        PeerId,
+        x25519::PrivateKey, // oinori: ephemeral private key for Noise handshake
+        PeerId,             // oinori: ephemeral PeerId derived from the key above
+        PeerId,             // target peer to dial
         NetworkAddress,
         #[serde(skip)] oneshot::Sender<Result<(), PeerManagerError>>,
     ),

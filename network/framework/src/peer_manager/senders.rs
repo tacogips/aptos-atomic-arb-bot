@@ -16,6 +16,11 @@ use bytes::Bytes;
 use futures::channel::oneshot;
 use std::time::Duration;
 
+use aptos_crypto::x25519;
+
+// oinori: RwLock for shared state
+use aptos_infallible::RwLock;
+
 /// Convenience wrapper which makes it easy to issue communication requests and await the responses
 /// from PeerManager.
 #[derive(Clone, Debug)]
@@ -114,14 +119,27 @@ impl ConnectionRequestSender {
         Self { inner }
     }
 
+    /// oinori: Dials a peer using an ephemeral identity (private key + PeerId).
+    /// The ephemeral identity is used in the Noise handshake so that validators
+    /// perceive each connection as coming from a different client.
     pub async fn dial_peer(
         &self,
+        self_peer_private_key: x25519::PrivateKey,
+        oinori_self_peer_id: PeerId,
         peer: PeerId,
         addr: NetworkAddress,
     ) -> Result<(), PeerManagerError> {
         let (oneshot_tx, oneshot_rx) = oneshot::channel();
-        self.inner
-            .push(peer, ConnectionRequest::DialPeer(peer, addr, oneshot_tx))?;
+        self.inner.push(
+            peer,
+            ConnectionRequest::DialPeer(
+                self_peer_private_key,
+                oinori_self_peer_id,
+                peer,
+                addr,
+                oneshot_tx,
+            ),
+        )?;
         oneshot_rx.await?
     }
 

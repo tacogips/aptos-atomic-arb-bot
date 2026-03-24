@@ -477,14 +477,7 @@ impl OutboundRpcs {
 
         let request_id = self.request_id_gen.next();
 
-        trace!(
-            NetworkSchema::new(network_context).remote_peer(peer_id),
-            "{} Sending outbound rpc request with request_id {} and protocol_id {} to {}",
-            network_context,
-            request_id,
-            protocol_id,
-            peer_id.short_str(),
-        );
+        // oinori: trace logging removed to reduce per-RPC overhead on the hot path
 
         // Start timer to collect outbound RPC latency.
         let timer =
@@ -499,8 +492,7 @@ impl OutboundRpcs {
         });
         write_reqs_tx.push((), message)?;
 
-        // Update the outbound RPC request metrics
-        self.update_outbound_rpc_request_metrics(protocol_id, req_len);
+        // oinori: outbound RPC metrics update removed to reduce per-RPC overhead
 
         // Create channel over which response is delivered to outbound_rpc_task.
         let (response_tx, response_rx) = oneshot::channel::<RpcResponse>();

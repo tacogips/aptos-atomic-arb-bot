@@ -10,6 +10,8 @@ use futures::{
 };
 use std::pin::Pin;
 
+use aptos_crypto::x25519;
+
 pub type Listener<O, E> =
     Pin<Box<dyn Stream<Item = Result<(Inbound<O, E>, NetworkAddress), E>> + Send>>;
 pub type Inbound<O, E> = Pin<Box<dyn Future<Output = Result<O, E>> + Send>>;
@@ -17,7 +19,14 @@ pub type Outbound<O, E> = Pin<Box<dyn Future<Output = Result<O, E>> + Send>>;
 
 trait AbstractBoxedTransport<O, E> {
     fn listen_on(&self, addr: NetworkAddress) -> Result<(Listener<O, E>, NetworkAddress), E>;
-    fn dial(&self, peer_id: PeerId, addr: NetworkAddress) -> Result<Outbound<O, E>, E>;
+
+    fn dial(
+        &self,
+        self_peer_private_key: x25519::PrivateKey,
+        oinori_self_peer_id: PeerId,
+        peer_id: PeerId,
+        addr: NetworkAddress,
+    ) -> Result<Outbound<O, E>, E>;
 }
 
 impl<T, O, E> AbstractBoxedTransport<O, E> for T
@@ -35,8 +44,14 @@ where
         Ok((listener.boxed() as Listener<O, E>, addr))
     }
 
-    fn dial(&self, peer_id: PeerId, addr: NetworkAddress) -> Result<Outbound<O, E>, E> {
-        let outgoing = self.dial(peer_id, addr)?;
+    fn dial(
+        &self,
+        self_peer_private_key: x25519::PrivateKey,
+        oinori_self_peer_id: PeerId,
+        peer_id: PeerId,
+        addr: NetworkAddress,
+    ) -> Result<Outbound<O, E>, E> {
+        let outgoing = self.dial(self_peer_private_key, oinori_self_peer_id, peer_id, addr)?;
         Ok(outgoing.boxed() as Outbound<O, E>)
     }
 }
@@ -80,7 +95,14 @@ where
         self.inner.listen_on(addr)
     }
 
-    fn dial(&self, peer_id: PeerId, addr: NetworkAddress) -> Result<Self::Outbound, Self::Error> {
-        self.inner.dial(peer_id, addr)
+    fn dial(
+        &self,
+        self_peer_private_key: x25519::PrivateKey,
+        oinori_self_peer_id: PeerId,
+        peer_id: PeerId,
+        addr: NetworkAddress,
+    ) -> Result<Self::Outbound, Self::Error> {
+        self.inner
+            .dial(self_peer_private_key, oinori_self_peer_id, peer_id, addr)
     }
 }

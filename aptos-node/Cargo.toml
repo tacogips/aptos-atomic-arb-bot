@@ -78,6 +78,10 @@ serde_yaml = { workspace = true }
 tokio = { workspace = true }
 url = { workspace = true }
 
+
+## TODO add  oinori-mev
+oinori-mev = { path = "../oinori/oinori-mev" }
+
 [target.'cfg(unix)'.dependencies]
 jemallocator = { workspace = true }
 

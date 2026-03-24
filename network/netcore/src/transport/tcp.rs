@@ -29,6 +29,8 @@ use tokio::{
 use tokio_util::compat::Compat;
 use url::Url;
 
+use aptos_crypto::x25519;
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TCPBufferCfg {
     inbound_rx_buffer_bytes: Option<u32>,
@@ -137,7 +139,13 @@ impl Transport for TcpTransport {
         ))
     }
 
-    fn dial(&self, _peer_id: PeerId, addr: NetworkAddress) -> Result<Self::Outbound, Self::Error> {
+    fn dial(
+        &self,
+        _self_peer_private_key: x25519::PrivateKey,
+        _oinori_self_peer_id: PeerId,
+        _peer_id: PeerId,
+        addr: NetworkAddress,
+    ) -> Result<Self::Outbound, Self::Error> {
         let protos = addr.as_slice();
 
         // ensure addr is well formed to save some work before potentially
@@ -441,7 +449,7 @@ mod test {
 
         let (listener, addr) = t.listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())?;
         let peer_id = PeerId::random();
-        let dial = t.dial(peer_id, addr)?;
+        let dial = t.dial(PeerId::random(), peer_id, addr)?;
         let listener = listener.into_future().then(|(maybe_result, _stream)| {
             let (incoming, _addr) = maybe_result.unwrap().unwrap();
             incoming.map(Result::unwrap)
@@ -460,7 +468,7 @@ mod test {
         assert!(result.is_err());
 
         let peer_id = PeerId::random();
-        let result = t.dial(peer_id, "/memory/22".parse().unwrap());
+        let result = t.dial(PeerId::random(), peer_id, "/memory/22".parse().unwrap());
         assert!(result.is_err());
     }
 

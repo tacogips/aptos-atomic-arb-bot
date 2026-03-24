@@ -60,6 +60,9 @@ pub use transaction::{
 pub use view::{ViewFunction, ViewRequest};
 pub use wrappers::{EventGuid, IdentifierWrapper, StateKeyWrapper};
 
+// oinori: export for mev
+pub use move_types::MoveStructValue;
+
 pub fn deserialize_from_string<'de, D, T>(deserializer: D) -> Result<T, D::Error>
 where
     D: Deserializer<'de>,

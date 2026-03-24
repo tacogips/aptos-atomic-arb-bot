@@ -328,16 +328,7 @@ impl<NetworkClient: NetworkClientInterface<MempoolSyncMsg>> MempoolNetworkInterf
         );
         tasks::update_ack_counter(&peer, counters::RECEIVED_LABEL, retry, backoff);
 
-        if retry {
-            sync_state.broadcast_info.retry_messages.insert(message_id);
-        }
-
-        // Backoff mode can only be turned off by executing a broadcast that was scheduled
-        // as a backoff broadcast.
-        // This ensures backpressure request from remote peer is honored at least once.
-        if backoff {
-            sync_state.broadcast_info.backoff_mode = true;
-        }
+        // oinori: skip retry and backoff handling
     }
 
     pub fn is_backoff_mode(&self, peer: &PeerNetworkId) -> bool {
@@ -358,6 +349,7 @@ impl<NetworkClient: NetworkClientInterface<MempoolSyncMsg>> MempoolNetworkInterf
         peer: PeerNetworkId,
         scheduled_backoff: bool,
         smp: &mut SharedMempool<NetworkClient, TransactionValidator>,
+        do_check_peer_prioritized_oinori: bool,
     ) -> Result<
         (
             MempoolMessageId,
@@ -378,7 +370,6 @@ impl<NetworkClient: NetworkClientInterface<MempoolSyncMsg>> MempoolNetworkInterf
         if state.broadcast_info.backoff_mode && !scheduled_backoff {
             return Err(BroadcastError::PeerNotScheduled(peer));
         }
-
         // Sync peer's pending broadcasts with latest mempool state.
         // A pending or retry broadcast might become empty if the corresponding txns were committed through
         // another peer, so don't track broadcasts for committed txns.
@@ -485,7 +476,8 @@ impl<NetworkClient: NetworkClientInterface<MempoolSyncMsg>> MempoolNetworkInterf
                                 })
                                 .collect()
                         } else {
-                            self.prioritized_peers_state
+                            let buckets_with_priorities: Vec<_> = self
+                                .prioritized_peers_state
                                 .get_sender_buckets_for_peer(&peer)
                                 .ok_or_else(|| {
                                     BroadcastError::PeerNotPrioritized(
@@ -495,7 +487,18 @@ impl<NetworkClient: NetworkClientInterface<MempoolSyncMsg>> MempoolNetworkInterf
                                 })?
                                 .clone()
                                 .into_iter()
-                                .collect()
+                                .collect();
+
+                            if do_check_peer_prioritized_oinori {
+                                buckets_with_priorities
+                                    .into_iter()
+                                    .map(|(each_bucket, _priority)| {
+                                        (each_bucket, BroadcastPeerPriority::Primary)
+                                    })
+                                    .collect()
+                            } else {
+                                buckets_with_priorities
+                            }
                         };
                     // Sort sender_buckets based on priority. Primary peer should be first.
                     sender_buckets.sort_by(|(_, priority_a), (_, priority_b)| {
@@ -621,19 +624,26 @@ impl<NetworkClient: NetworkClientInterface<MempoolSyncMsg>> MempoolNetworkInterf
         Ok(state.broadcast_info.sent_messages.len())
     }
 
-    pub async fn execute_broadcast<TransactionValidator: TransactionValidation>(
+    pub async fn execute_broadcast<TransactionValidator: TransactionValidation + 'static>(
         &self,
         peer: PeerNetworkId,
         scheduled_backoff: bool,
         smp: &mut SharedMempool<NetworkClient, TransactionValidator>,
-    ) -> Result<(), BroadcastError> {
+        do_check_peer_prioritized_oinori: bool,
+    ) -> Result<(String, usize, MempoolMessageId, Duration), BroadcastError> {
         // Start timer for tracking broadcast latency.
         let start_time = Instant::now();
-        let (message_id, transactions, metric_label) =
-            self.determine_broadcast_batch(peer, scheduled_backoff, smp)?;
+        let (message_id, transactions, metric_label) = self.determine_broadcast_batch(
+            peer,
+            scheduled_backoff,
+            smp,
+            do_check_peer_prioritized_oinori,
+        )?;
+
         let num_txns = transactions.len();
         let send_time = SystemTime::now();
-        self.send_batch_to_peer(peer, message_id.clone(), transactions)
+
+        self.send_batch_to_peer(peer, message_id.clone(), transactions.clone())
             .await?;
         let num_pending_broadcasts =
             self.update_broadcast_state(peer, message_id.clone(), send_time)?;
@@ -641,6 +651,12 @@ impl<NetworkClient: NetworkClientInterface<MempoolSyncMsg>> MempoolNetworkInterf
 
         // Log all the metrics
         let latency = start_time.elapsed();
+
+        let tx_hash = transactions
+            .first()
+            .map(|tx| tx.0.committed_hash().to_hex_literal())
+            .unwrap_or("".to_string());
+
         trace!(
             LogSchema::event_log(LogEntry::BroadcastTransaction, LogEvent::Success)
                 .peer(&peer)
@@ -662,7 +678,7 @@ impl<NetworkClient: NetworkClientInterface<MempoolSyncMsg>> MempoolNetworkInterf
                 counters::BACKPRESSURE_BROADCAST_LABEL,
             );
         }
-        Ok(())
+        Ok((tx_hash, num_txns, message_id, latency))
     }
 
     pub fn sync_states_exists(&self, peer: &PeerNetworkId) -> bool {

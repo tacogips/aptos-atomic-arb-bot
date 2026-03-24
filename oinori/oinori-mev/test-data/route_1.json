@@ -1,0 +1,25 @@
+{
+  "input_amount": 1000009454,
+  "route_steps": [
+    {
+      "swap_index_and_direction": {
+        "swap_pair_index": {
+          "swap_index": 2,
+          "pair_index": 88
+        },
+        "is_x_to_y": true
+      },
+      "out_amount": 121294950
+    },
+    {
+      "swap_index_and_direction": {
+        "swap_pair_index": {
+          "swap_index": 5,
+          "pair_index": 3
+        },
+        "is_x_to_y": false
+      },
+      "out_amount": 1000043667
+    }
+  ]
+}

@@ -83,3 +83,34 @@ Oinori-mevは、Aptosブロックチェーン上でアトミックアービト�
 - 金銭的な意思決定の根拠として使用すべきではありません
 
 すべて自己責任でご利用ください。
+
+---
+
+## Article Index / 記事一覧
+
+The English articles in `article/en/` are the primary version. The Japanese articles in `article/ja/` are provided alongside them.
+
+- Technical Techniques in oinori - Implementation Strategy for the Aptos MEV Bot ([EN](article/en/article-source-oinori-engineering-points.md) / [JA](article/ja/article-source-oinori-engineering-points.md))
+- Changes to the `api` package ([EN](article/en/diff-exp-api.md) / [JA](article/ja/diff-exp-api.md))
+- Changes to the `crates/aptos-crypto` package ([EN](article/en/diff-exp-aptos-crypto.md) / [JA](article/ja/diff-exp-aptos-crypto.md))
+- Changes to the `aptos-node` package ([EN](article/en/diff-exp-aptos-node.md) / [JA](article/ja/diff-exp-aptos-node.md))
+- Changes to docker-related files ([EN](article/en/diff-exp-docker.md) / [JA](article/ja/diff-exp-docker.md))
+- Changes to the mempool package ([EN](article/en/diff-exp-mempool.md) / [JA](article/ja/diff-exp-mempool.md))
+- Changes to the network/framework package ([EN](article/en/diff-exp-network-framework.md) / [JA](article/ja/diff-exp-network-framework.md))
+- Changes to the network/netcore package ([EN](article/en/diff-exp-network-netcore.md) / [JA](article/ja/diff-exp-network-netcore.md))
+- Changes in the `oinori-configs` Directory (Newly Added) ([EN](article/en/diff-exp-oinori-configs.md) / [JA](article/ja/diff-exp-oinori-configs.md))
+- oinori-mev aggregator module ([EN](article/en/diff-exp-oinori-main-aggregator.md) / [JA](article/ja/diff-exp-oinori-main-aggregator.md))
+- oinori-mev coins module ([EN](article/en/diff-exp-oinori-main-coins.md) / [JA](article/ja/diff-exp-oinori-main-coins.md))
+- oinori-mev engine/route_filter module ([EN](article/en/diff-exp-oinori-main-engine-route-filter.md) / [JA](article/ja/diff-exp-oinori-main-engine-route-filter.md))
+- oinori-mev engine module ([EN](article/en/diff-exp-oinori-main-engine.md) / [JA](article/ja/diff-exp-oinori-main-engine.md))
+- oinori-mev lib.rs / entry point ([EN](article/en/diff-exp-oinori-main-lib.md) / [JA](article/ja/diff-exp-oinori-main-lib.md))
+- oinori-mev read_db module ([EN](article/en/diff-exp-oinori-main-read-db.md) / [JA](article/ja/diff-exp-oinori-main-read-db.md))
+- oinori-mev swap/amm module ([EN](article/en/diff-exp-oinori-main-swap-amm.md) / [JA](article/ja/diff-exp-oinori-main-swap-amm.md))
+- oinori-mev swap/router module ([EN](article/en/diff-exp-oinori-main-swap-router.md) / [JA](article/ja/diff-exp-oinori-main-swap-router.md))
+- oinori-mev swap/specifics module ([EN](article/en/diff-exp-oinori-main-swap-specifics.md) / [JA](article/ja/diff-exp-oinori-main-swap-specifics.md))
+- oinori-mev transaction_stream module ([EN](article/en/diff-exp-oinori-main-transaction-stream.md) / [JA](article/ja/diff-exp-oinori-main-transaction-stream.md))
+- oinori-mev transaction module ([EN](article/en/diff-exp-oinori-main-transaction.md) / [JA](article/ja/diff-exp-oinori-main-transaction.md))
+- oinori-mev Utility Modules ([EN](article/en/diff-exp-oinori-main-utils.md) / [JA](article/ja/diff-exp-oinori-main-utils.md))
+- Changes to Root Directory Configuration Files ([EN](article/en/diff-exp-root-configs.md) / [JA](article/ja/diff-exp-root-configs.md))
+- Changes to the `state-sync` Package ([EN](article/en/diff-exp-state-sync.md) / [JA](article/ja/diff-exp-state-sync.md))
+- Changes to the `types` Package ([EN](article/en/diff-exp-types.md) / [JA](article/ja/diff-exp-types.md))

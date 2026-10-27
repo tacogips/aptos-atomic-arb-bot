@@ -880,7 +880,11 @@ debug-assertions = true
 [profile.bench]
 debug = true
 
+
+# Current Mozilla trust data adapted to the legacy TLS API; see vendor/SECURITY.md.
 [patch.crates-io]
+webpki-roots-0-23-1 = { package = "webpki-roots", path = "vendor/webpki-roots-0.23.1" }
+webpki-roots-0-25-3 = { package = "webpki-roots", path = "vendor/webpki-roots-0.25.3" }
 serde-reflection = { git = "https://github.com/aptos-labs/serde-reflection", rev = "73b6bbf748334b71ff6d7d09d06a29e3062ca075" }
 merlin = { git = "https://github.com/aptos-labs/merlin" }
 x25519-dalek = { git = "https://github.com/aptos-labs/x25519-dalek", branch = "zeroize_v1" }

@@ -2,7 +2,7 @@
   description = "Oinori - Educational atomic arbitrage bot implementation on Aptos blockchain. This project demonstrates DEX arbitrage strategies, transaction construction, and MEV concepts for learning purposes.";
 
   inputs = {
-    nixpkgs.url = "github:tacogips/nixpkgs-security/ae36ce5d71747ef2655933b315a361463ea90d82";
+    nixpkgs.url = "github:tacogips/nixpkgs-security/d2a93d2fe7820d90eaa10af53891412ec3614f56";
     nixpkgs-unstable.follows = "nixpkgs";
     flake-utils.url = "github:numtide/flake-utils";
     fenix.url = "github:nix-community/fenix";

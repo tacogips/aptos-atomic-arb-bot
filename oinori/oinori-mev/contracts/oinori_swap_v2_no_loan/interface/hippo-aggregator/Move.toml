@@ -1,0 +1,30 @@
+[package]
+name = "HippoAggregator"
+version = "0.0.0"
+
+[dependencies]
+##Econia = { git = "https://github.com/manahip/econia.git", subdir = "src/move/econia", rev = "5721a6586dec90c292b1655497247c3c1ebf51e5" }
+#CoinList = { git = "https://github.com/hippospace/aptos-coin-list.git", subdir = "", rev = "cc2100fb533f8b989a2c28c64a15c52007a91945" }
+#Liquidswap = { local = "./interface/pontem-Liquidswap" }
+##basiq = { local = "./interface/basiq-basiq" }
+#ditto-staking = { local = "./interface/ditto-research" }
+#Tortuga = { local = "./interface/tortuga" }
+#TortugaGovernance = { local = "./interface/tortuga-stake-coin" }
+#Aptoswap = { local = "./interface/aptoswap" }
+#aux = { local = "./interface/aux"}
+#AnimeSwapV1 = { local = "./interface/animeswap" }
+#Cetue-AMM = { local = "./interface/cetus-amm" }
+#PancakeSwap = { local = "./interface/pancake" }
+#obric-swap = { local = "./interface/obric" }
+
+
+[dependencies.AptosFramework]
+git = 'https://github.com/aptos-labs/aptos-core.git'
+rev = 'aptos-node-v1.12.1'
+subdir = 'aptos-move/framework/aptos-framework'
+
+
+[addresses]
+hippo_aggregator = "89576037b3cc0b89645ea393a47787bb348272c76d6941c574b053672b848039"
+poster = "0x12"
+poster_2 = "0x13"

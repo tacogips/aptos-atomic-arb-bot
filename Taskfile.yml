@@ -1,0 +1,46 @@
+# Oinori MEV - Docker Build and Run
+#
+# Prerequisites:
+# - Docker with buildx support
+# - See: https://github.com/docker/buildx
+# - go-task: https://taskfile.dev
+
+version: '3'
+
+tasks:
+  build:
+    desc: Build the Docker image locally
+    cmds:
+      - >-
+        docker buildx build --load --platform linux/amd64
+        --build-arg BUILT_VIA_BUILDKIT=true
+        -f docker/builder/oinori.Dockerfile
+        -t aptos-oinori:latest .
+
+  run:
+    desc: Run oinori node in Docker (standard mode)
+    deps: [build]
+    cmds:
+      - docker compose up oinori
+
+  run-dry:
+    desc: Run oinori node in Docker (dry-run mode - no actual transactions)
+    deps: [build]
+    cmds:
+      - docker compose up oinori-dry-run
+
+  stop:
+    desc: Stop all containers
+    cmds:
+      - docker compose down
+
+  check:
+    desc: Check if node is running
+    cmds:
+      - curl localhost:8080/v1
+
+  remove-lock-files:
+    desc: Remove database lock files (if container crashed)
+    cmds:
+      - sudo rm -f ./data/aptos_mainnet_data/db/ledger_db/LOCK
+      - sudo rm -f ./data/aptos_mainnet_data/db/state_merkle_db/LOCK

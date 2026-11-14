@@ -1,0 +1,35 @@
+{
+  "input_amount": 8849019369,
+  "route_steps": [
+    {
+      "swap_index_and_direction": {
+        "swap_pair_index": {
+          "swap_index": 5,
+          "pair_index": 2
+        },
+        "is_x_to_y": true
+      },
+      "out_amount": 1211686269
+    },
+    {
+      "swap_index_and_direction": {
+        "swap_pair_index": {
+          "swap_index": 5,
+          "pair_index": 1
+        },
+        "is_x_to_y": true
+      },
+      "out_amount": 1210396987
+    },
+    {
+      "swap_index_and_direction": {
+        "swap_pair_index": {
+          "swap_index": 6,
+          "pair_index": 5
+        },
+        "is_x_to_y": false
+      },
+      "out_amount": 9299131574
+    }
+  ]
+}

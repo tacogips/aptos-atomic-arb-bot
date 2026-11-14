@@ -1,0 +1,110 @@
+[package]
+name = "oinori-mev"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = { workspace = true }
+clap = "3.1.8"
+fail = "0.5.0"
+futures = "0.3.21"
+hex = "0.4.3"
+rand = { workspace = true }
+rand_core = { version = "0.5.1" }
+rayon = "1.5.2"
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+
+aptos-api = { workspace = true }
+aptos-rest-client = { workspace = true }
+aptos-api-types = { workspace = true }
+aptos-build-info = { workspace = true }
+aptos-config = { workspace = true }
+aptos-crypto = { workspace = true }
+aptos-data-client = { workspace = true }
+aptos-genesis = { workspace = true }
+aptos-indexer = { workspace = true }
+aptos-infallible = { workspace = true }
+aptos-logger = { workspace = true }
+aptos-global-constants = { workspace = true }
+aptos-mempool = { workspace = true }
+aptos-secure-storage = { workspace = true }
+aptos-telemetry = { workspace = true }
+aptos-temppath = { workspace = true }
+aptos-time-service = { workspace = true }
+aptos-types = { workspace = true }
+aptos-vm = { workspace = true }
+
+aptos-db = { workspace = true }
+aptos-cached-packages = { workspace = true }
+aptos-consensus = { workspace = true }
+aptos-consensus-notifications = { workspace = true }
+aptos-crash-handler = { workspace = true }
+aptos-data-streaming-service = { workspace = true }
+aptos-event-notifications = { workspace = true }
+aptos-executor = { workspace = true }
+aptos-executor-types = { workspace = true }
+aptos-framework = { workspace = true }
+aptos-inspection-service = { workspace = true }
+#aptos-network = { path = "../../network" }
+aptos-network-builder = { workspace = true }
+aptos-state-sync-driver = { workspace = true }
+aptos-storage-interface = { workspace = true }
+aptos-storage-service-client = { workspace = true }
+aptos-storage-service-server = { workspace = true }
+aptos-sdk = { workspace = true }
+bytes = { workspace = true }
+
+chrono = "0.4.22"
+
+serde = { version = "1.0.147", features = ["derive"] }
+serde_json = { version = "1.0.91", features = ["arbitrary_precision"] }
+
+
+reqwest = { version = "0.11.10", features = [
+    "stream",
+], default-features = false }
+regex = "1.5.5"
+
+log = "0.4.17"
+once_cell = "1.10.0"
+include_dir = "0.7.3"
+toml = "0.5.9"
+
+num-integer = { version = "0.1", features = ["i128"] }
+uint = "0.9.4"
+
+
+## use workspace
+bcs = { workspace = true }
+move-binary-format = { workspace = true }
+move-core-types = { workspace = true }
+move-resource-viewer = { workspace = true }
+parking_lot = { workspace = true }
+async-recursion = "1.0.0"
+fxhash = "0.2.1"
+url = { workspace = true }
+moka = { version = "0.9", features = ["sync"] }
+static_init = { version = "1.0.3", features = ["parking_lot"] }
+again.workspace = true
+urlencoding = "2.1.3"
+#hashbrown = { version = "0.13.2", features = ["serde"] }
+#ahash = { version = "0.8.3", features = ["serde"] }
+
+move-model = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+jemallocator = { workspace = true }
+
+[features]
+default = []
+assert-private-keys-not-cloneable = [
+    "aptos-crypto/assert-private-keys-not-cloneable",
+]
+check-vm-features = []
+
+
+[dev-dependencies]
+pprof = { version = "0.10", features = ["flamegraph"] }

@@ -1,0 +1,4 @@
+build
+.idea
+node_modules/
+/interface/tortuga/stake_router.docs.md
